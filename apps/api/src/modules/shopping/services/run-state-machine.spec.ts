@@ -22,6 +22,12 @@ describe('RunStateMachine', () => {
     ).toThrow('Invalid run transition');
   });
 
+  it('allows a safety-paused run to enter user takeover', () => {
+    expect(() =>
+      machine.assertTransition(S.Paused, S.UserTakeover, S.Comparing),
+    ).not.toThrow();
+  });
+
   it.each([S.Cancelled, S.Failed])(
     'allows paused runs to enter terminal state %s',
     (terminal) => {

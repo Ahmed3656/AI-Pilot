@@ -89,6 +89,10 @@ const en = {
   hideDetails: 'Hide preferences',
   sendRequest: 'Send request',
   startFailed: 'Could not start this run. Check the connection and try again.',
+  runBusy:
+    'Another run is using the browser. Finish or cancel it before starting a new one.',
+  runServiceUnavailable:
+    'The shopping agent or browser is unavailable. Try again in a moment.',
   exampleRetail:
     'Find a Samsung A55 256 GB under 25,000 EGP, delivered by Thursday',
   exampleFood:
@@ -334,6 +338,9 @@ const ar: Record<keyof typeof en, string> = {
   hideDetails: 'إخفاء التفضيلات',
   sendRequest: 'إرسال الطلب',
   startFailed: 'تعذر بدء المهمة. تحقق من الاتصال وحاول مرة أخرى.',
+  runBusy: 'هناك مهمة أخرى تستخدم المتصفح. أكملها أو ألغها قبل بدء مهمة جديدة.',
+  runServiceUnavailable:
+    'وكيل التسوق أو المتصفح غير متاح حالياً. حاول مرة أخرى بعد قليل.',
   exampleRetail:
     'ابحث عن Samsung A55 سعة ٢٥٦ جيجابايت بأقل من ٢٥٬٠٠٠ EGP والتوصيل قبل الخميس',
   exampleFood: 'اطلب بيتزا ببروني كبيرة في المعادي بتقييم +٤٫٣ وأقل من ٤٥٠ EGP',

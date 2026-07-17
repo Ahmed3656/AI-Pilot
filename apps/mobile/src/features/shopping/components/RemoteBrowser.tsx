@@ -197,6 +197,8 @@ export function RemoteBrowser({
         >
           <WebView
             allowsInlineMediaPlayback
+            sharedCookiesEnabled
+            thirdPartyCookiesEnabled
             javaScriptEnabled
             setSupportMultipleWindows={false}
             onShouldStartLoadWithRequest={(request) => {

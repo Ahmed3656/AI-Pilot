@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
+import { isAxiosError } from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/components/Toast';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -102,8 +103,18 @@ export function ShoppingHomeScreen() {
         category: categorySelection,
       });
       router.push(`/run/${run.id}` as Href);
-    } catch {
-      showToast(t('startFailed'), 'error');
+    } catch (reason) {
+      const status = isAxiosError(reason) ? reason.response?.status : undefined;
+      showToast(
+        t(
+          status === 429
+            ? 'runBusy'
+            : status === 502 || status === 503
+              ? 'runServiceUnavailable'
+              : 'startFailed',
+        ),
+        'error',
+      );
     } finally {
       setIsStarting(false);
     }

@@ -48,7 +48,9 @@ const TRANSITIONS: Readonly<
     S.Failed,
   ],
   [S.UserTakeover]: [S.ReadyForHandoff, S.Completed, S.Cancelled, S.Failed],
-  [S.Paused]: [S.Cancelled, S.Failed],
+  // A safety-paused run may be handed to the user so they can clear a CAPTCHA,
+  // login, or browser warning before the agent resumes its stored state.
+  [S.Paused]: [S.UserTakeover, S.Cancelled, S.Failed],
   [S.Completed]: [],
   [S.Cancelled]: [],
   [S.Failed]: [],

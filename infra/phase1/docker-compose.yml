@@ -183,7 +183,18 @@ services:
       - control-plane
       - agent-egress
     healthcheck:
-      test: ['CMD-SHELL', '/opt/bin/check-grid.sh --host 0.0.0.0 --port 4444']
+      # Grid's top-level `ready` flag becomes false while the single allowed
+      # session is occupied. That means "busy", not "unhealthy". Check that a
+      # node is still registered and UP so active runs do not poison Compose
+      # health and block restarts/dependent services.
+      test:
+        - CMD
+        - python
+        - -c
+        - |-
+          import json, urllib.request;
+          value = json.load(urllib.request.urlopen('http://127.0.0.1:4444/status', timeout=3))['value'];
+          assert any(node.get('availability') == 'UP' for node in value.get('nodes', []))
       interval: 10s
       timeout: 10s
       retries: 12

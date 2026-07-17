@@ -720,6 +720,23 @@ export class ShoppingService implements OnModuleDestroy {
   }
 
   private async applyAiEvent(run: ShoppingRun, dto: AiEventDto): Promise<void> {
+    const previousStatus = run.status;
+    if (
+      dto.type === 'run.status_changed' &&
+      dto.status === ShoppingRunState.Paused &&
+      previousStatus !== ShoppingRunState.Paused
+    ) {
+      // Safety pauses originate in the worker, rather than the public control
+      // endpoint. Preserve the interrupted state so Resume and control release
+      // have a canonical target in both services.
+      run.resumeStatus = previousStatus;
+    } else if (
+      dto.type === 'run.status_changed' &&
+      previousStatus === ShoppingRunState.Paused &&
+      dto.status !== ShoppingRunState.Paused
+    ) {
+      run.resumeStatus = null;
+    }
     run.status = dto.status;
     run.lastEventId = dto.id;
     switch (dto.type) {

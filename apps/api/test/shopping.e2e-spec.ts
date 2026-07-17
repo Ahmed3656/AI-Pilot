@@ -362,6 +362,41 @@ describe('DealPilot canonical API contract (e2e)', () => {
     expect((await store.report(rejected.run.id)).approvals).toHaveLength(0);
   });
 
+  it('preserves the resume target for worker safety pauses and permits takeover', async () => {
+    const created = await createRun('retail', 'Find a monitor', 'en-EG');
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'pause-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('pause-domain'))
+      .send({ requestId: 'pause-domain', domains: ['amazon.eg'] })
+      .expect(200);
+
+    await postEvent(runId, 'paused', 'run.status_changed', {
+      from: 'comparing',
+      to: 'paused',
+      reasonCode: 'captcha_detected',
+    });
+
+    const paused = await api()
+      .get(`/api/v1/shopping/runs/${runId}`)
+      .expect(200);
+    expect(paused.body.run).toMatchObject({
+      status: 'paused',
+      resumeStatus: 'comparing',
+    });
+
+    const claimed = await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('pause-takeover'))
+      .send({})
+      .expect(200);
+    expect(claimed.body.run).toMatchObject({
+      status: 'user_takeover',
+      resumeStatus: 'comparing',
+    });
+  });
+
   it('scopes address grants by request, approved domain, cityOrArea, and earliest TTL without exposing plaintext', async () => {
     const created = await createRun('food', 'Order pizza', 'en-EG');
     const runId = created.run.id as string;
