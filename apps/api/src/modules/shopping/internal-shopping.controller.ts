@@ -1,17 +1,17 @@
 import {
   Body,
   Controller,
-  Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Post,
-  Query,
   UseGuards,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../../core/decorators/public.decorator';
-import { AiEventDto, ResolveSecretDto, ViewerAuthorizeQueryDto } from './dto';
+import { ContractException } from '../../core/filters/contract-exception';
+import { AiEventDto, ResolveSecretDto } from './dto';
 import { InternalTokenGuard } from './services';
 import { ShoppingService } from './shopping.service';
 
@@ -25,25 +25,29 @@ export class InternalShoppingController {
 
   @Post('ai-events')
   @HttpCode(HttpStatus.ACCEPTED)
-  @ApiOperation({ summary: 'Receive an idempotent event from the AI harness' })
   aiEvent(@Body() dto: AiEventDto) {
     return this.shopping.receiveAiEvent(dto);
   }
 
   @Post('secrets/resolve')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Resolve exactly one approved semantic address field',
-  })
   resolveSecret(@Body() dto: ResolveSecretDto) {
     return this.shopping.resolveSecret(dto);
   }
 
-  @Get('viewer/authorize')
+  @Post('viewer/authorize')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Authorize a viewer token for the live browser harness',
+    summary: 'Authorize a bearer viewer token without accepting URL tokens',
   })
-  authorizeViewer(@Query() query: ViewerAuthorizeQueryDto) {
-    return this.shopping.authorizeViewer(query.token);
+  authorizeViewer(@Headers('authorization') authorization: string | undefined) {
+    const match = /^Bearer (\S+)$/.exec(authorization ?? '');
+    if (!match)
+      throw new ContractException(
+        'INVALID_VIEWER_TOKEN',
+        401,
+        'Viewer bearer token is required',
+      );
+    return this.shopping.authorizeViewer(match[1]);
   }
 }

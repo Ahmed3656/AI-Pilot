@@ -1,22 +1,15 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { timingSafeEqual } from 'node:crypto';
 import { Request } from 'express';
+import { ContractException } from '../../../core/filters/contract-exception';
 
 @Injectable()
 export class InternalTokenGuard implements CanActivate {
-  private readonly expected: string;
+  private readonly expected?: string;
 
   constructor(config: ConfigService) {
-    this.expected = config.get<string>(
-      'shopping.internalToken',
-      'local-internal-token-change-before-production',
-    );
+    this.expected = config.get<string>('shopping.internalToken') || undefined;
   }
 
   canActivate(context: ExecutionContext): boolean {
@@ -24,8 +17,12 @@ export class InternalTokenGuard implements CanActivate {
       .switchToHttp()
       .getRequest<Request>()
       .header('x-internal-token');
-    if (!supplied || !safeEqual(supplied, this.expected)) {
-      throw new UnauthorizedException('Invalid internal credentials');
+    if (!this.expected || !supplied || !safeEqual(supplied, this.expected)) {
+      throw new ContractException(
+        'INVALID_INTERNAL_TOKEN',
+        401,
+        'Invalid internal credentials',
+      );
     }
     return true;
   }

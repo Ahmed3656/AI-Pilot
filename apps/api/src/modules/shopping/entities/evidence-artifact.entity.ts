@@ -21,6 +21,17 @@ export class EvidenceArtifact extends BaseEntity {
   @Column({ type: 'varchar', length: 64 })
   sha256!: string;
 
-  @Column({ type: 'jsonb', default: () => "'{}'" })
-  metadata!: Record<string, unknown>;
+  @Column({ name: 'captured_at', type: 'timestamptz' })
+  capturedAt!: Date;
+
+  @Column({
+    name: 'merchant_attempt_id',
+    type: 'varchar',
+    length: 128,
+    nullable: true,
+  })
+  merchantAttemptId!: string | null;
+
+  @Column({ type: 'boolean', default: true })
+  redacted = true as const;
 }
