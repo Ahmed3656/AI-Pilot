@@ -47,6 +47,8 @@ async def test_rejected_and_unverified_coupons_are_not_claimed_and_winner_is_res
     assert len(attempts) == 5
     assert attempts[1].accepted is False
     assert attempts[1].verified_saving == 0
+    assert attempts[0].source_url.endswith("/0")
+    assert attempts[0].rejection_reason == "not_eligible"
     assert attempts[2].accepted is True
     assert attempts[2].source_url.endswith("/2")
     assert attempts[2].before_total == Decimal("100")

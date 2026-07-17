@@ -1,6 +1,17 @@
 from agent_ai.schemas.health import HealthResponse
+from agent_ai.schemas.runs import (
+    CommandName,
+    InternalCommandRequest,
+    InternalCommandResponse,
+    InternalCreateRunRequest,
+    InternalCreateRunResponse,
+)
 
-__all__ = ["HealthResponse"]
-from agent_ai.schemas.runs import RunCommandRequest, RunCreateRequest, RunResponse
-
-__all__ = ["RunCommandRequest", "RunCreateRequest", "RunResponse"]
+__all__ = [
+    "CommandName",
+    "HealthResponse",
+    "InternalCommandRequest",
+    "InternalCommandResponse",
+    "InternalCreateRunRequest",
+    "InternalCreateRunResponse",
+]

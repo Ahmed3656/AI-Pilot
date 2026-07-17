@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <body>
+    <div id="shadow-host"></div>
+    <iframe
+      title="same-origin address preview"
+      srcdoc="<p>12 Secret Street, Cairo</p>"
+    ></iframe>
+    <script>
+      const root = document.querySelector('#shadow-host').attachShadow({ mode: 'open' });
+      root.innerHTML = '<span>12 Secret Street, Cairo</span>';
+    </script>
+  </body>
+</html>
