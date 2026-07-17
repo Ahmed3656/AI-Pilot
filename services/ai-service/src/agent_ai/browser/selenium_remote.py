@@ -140,8 +140,9 @@ class SeleniumRemoteBrowser:
             return
         options = webdriver.ChromeOptions()
         options.add_argument("--disable-notifications")
-        options.add_argument("--window-size=1440,1000")
+        options.add_argument("--window-size=1280,800")
         self.driver = self._driver_factory(command_executor=self.remote_url, options=options)
+        self.driver.set_window_size(1280, 800)
 
     def close(self) -> None:
         if self.driver is not None:
@@ -414,9 +415,7 @@ class BrowserActionExecutor:
         if len(path) < 2:
             raise SafetyViolation("Drag action requires at least two coordinates")
         for point in (path[0], path[-1]):
-            metadata = await asyncio.to_thread(
-                self.browser.metadata_at, point["x"], point["y"]
-            )
+            metadata = await asyncio.to_thread(self.browser.metadata_at, point["x"], point["y"])
             assert_not_card_field(metadata)
             assert_not_final_action(metadata)
 

@@ -1,17 +1,19 @@
 import {
   Body,
   Controller,
-  Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Post,
-  Query,
+  Res,
+  UnauthorizedException,
   UseGuards,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
 import { Public } from '../../core/decorators/public.decorator';
-import { AiEventDto, ResolveSecretDto, ViewerAuthorizeQueryDto } from './dto';
+import { AiEventDto, ResolveSecretDto } from './dto';
 import { InternalTokenGuard } from './services';
 import { ShoppingService } from './shopping.service';
 
@@ -39,11 +41,40 @@ export class InternalShoppingController {
     return this.shopping.resolveSecret(dto);
   }
 
-  @Get('viewer/authorize')
+  @Post('viewer/authorize')
+  @HttpCode(HttpStatus.OK)
+  @ApiHeader({ name: 'Authorization', required: false })
   @ApiOperation({
     summary: 'Authorize a viewer token for the live browser harness',
   })
-  authorizeViewer(@Query() query: ViewerAuthorizeQueryDto) {
-    return this.shopping.authorizeViewer(query.token);
+  async authorizeViewer(
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const token = viewerCredential(authorization, cookie);
+    const result = await this.shopping.authorizeViewer(token);
+    response.setHeader('X-DealPilot-Viewer-Mode', result.mode);
+    return result;
   }
+}
+
+function viewerCredential(
+  authorization: string | undefined,
+  cookie: string | undefined,
+): string {
+  const match = /^Bearer ([^\s]+)$/.exec(authorization ?? '');
+  if (match) return match[1];
+
+  for (const part of cookie?.split(';') ?? []) {
+    const [name, ...value] = part.trim().split('=');
+    if (name === 'dealpilot_viewer' && value.length) {
+      try {
+        return decodeURIComponent(value.join('='));
+      } catch {
+        break;
+      }
+    }
+  }
+  throw new UnauthorizedException('Viewer credentials are required');
 }

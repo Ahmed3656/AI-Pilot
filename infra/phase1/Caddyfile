@@ -8,6 +8,7 @@
 
 	header {
 		-Server
+		Cache-Control "no-store"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "no-referrer"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
@@ -23,39 +24,56 @@
 	@viewer path /viewer /viewer/*
 	handle @viewer {
 		route {
-			forward_auth api:3000 {
-				uri /internal/v1/viewer/authorize
-				header_up X-DealPilot-Viewer-Auth {$VIEWER_AUTH_SHARED_SECRET}
-				copy_headers X-DealPilot-Viewer-Session
+			# Expanded forward-auth form is used because the frozen contract requires POST.
+			reverse_proxy {$CADDY_API_UPSTREAM} {
+				method POST
+				rewrite /internal/v1/viewer/authorize
+				header_up X-Forwarded-Method {method}
+				header_up X-Forwarded-Uri {uri}
+				header_up X-Internal-Token {$INTERNAL_TOKEN}
+
+				@authorized status 2xx
+				handle_response @authorized {
+					request_header X-DealPilot-Viewer-Mode {rp.header.X-DealPilot-Viewer-Mode}
+				}
 			}
 
-			@viewer_root path /viewer
-			redir @viewer_root /viewer/?autoconnect=1&resize=scale&path=viewer/websockify 308
+			@view_root {
+				path /viewer /viewer/
+				header X-DealPilot-Viewer-Mode view
+			}
+			redir @view_root /viewer/vnc.html?autoconnect=1&resize=scale&view_only=1&path=viewer/websockify 302
+
+			@control_root path /viewer /viewer/
+			redir @control_root /viewer/vnc.html?autoconnect=1&resize=scale&path=viewer/websockify 302
 
 			uri strip_prefix /viewer
-			reverse_proxy browser:7900 {
+			reverse_proxy {$CADDY_VIEWER_UPSTREAM} {
 				header_up -Authorization
 				header_up -Cookie
-				header_up -X-DealPilot-Viewer-Session
+				header_up -X-Internal-Token
+				header_up -X-DealPilot-Viewer-Mode
+				header_down -Server
+				header_down Cache-Control "no-store"
 			}
 		}
 	}
 
-	@shopping_websocket {
-		path /api/v1/shopping/ws /api/v1/shopping/ws/*
+	@shopping_events {
+		path_regexp events ^/api/v1/shopping/runs/[^/]+/events$
 		header Connection *Upgrade*
 		header Upgrade websocket
 	}
-	handle @shopping_websocket {
-		reverse_proxy api:3000
+	handle @shopping_events {
+		reverse_proxy {$CADDY_API_UPSTREAM}
 	}
 
 	handle /api/* {
-		reverse_proxy api:3000
+		reverse_proxy {$CADDY_API_UPSTREAM}
 	}
 
 	handle /health* {
-		reverse_proxy api:3000
+		reverse_proxy {$CADDY_API_UPSTREAM}
 	}
 
 	handle {

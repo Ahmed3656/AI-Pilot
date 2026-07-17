@@ -29,8 +29,6 @@ export function configureApiRouting(app: INestApplication): void {
       { path: 'health', method: RequestMethod.ALL },
       { path: 'health/live', method: RequestMethod.ALL },
       { path: 'health/ready', method: RequestMethod.ALL },
-      { path: 'shopping', method: RequestMethod.ALL },
-      { path: 'shopping/{*path}', method: RequestMethod.ALL },
       { path: 'internal/v1', method: RequestMethod.ALL },
       { path: 'internal/v1/{*path}', method: RequestMethod.ALL },
     ],

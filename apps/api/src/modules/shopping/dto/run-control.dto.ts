@@ -20,9 +20,3 @@ export class ViewerTokenQueryDto {
   @IsEnum(ViewerMode)
   mode: ViewerMode = ViewerMode.View;
 }
-
-export class ViewerAuthorizeQueryDto {
-  @ApiProperty()
-  @IsString()
-  token!: string;
-}

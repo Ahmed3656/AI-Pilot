@@ -96,6 +96,25 @@ class EnvironmentVariables {
   @IsInt()
   @Min(1000)
   ADDRESS_SECRET_TTL_MS = 30 * 60 * 1000;
+
+  @IsInt()
+  @Min(1)
+  VIEWER_TOKEN_TTL_SECONDS = 900;
+
+  @IsInt()
+  @Min(1)
+  CONTROL_LEASE_TTL_SECONDS = 120;
+
+  @IsInt()
+  @Min(1)
+  RUN_BROWSER_TTL_SECONDS = 3600;
+
+  @IsInt()
+  @Min(1)
+  EVENT_RETENTION_SECONDS = 86400;
+
+  @IsString()
+  DEALPILOT_PUBLIC_ORIGIN = 'http://localhost:8080';
 }
 
 export function validateEnvironment(config: Record<string, unknown>) {
@@ -131,6 +150,12 @@ export function validateEnvironment(config: Record<string, unknown>) {
       config.JWT_SECRET ??
       'local-development-secret-change-before-production',
     ADDRESS_SECRET_TTL_MS: numeric('ADDRESS_SECRET_TTL_MS', 30 * 60 * 1000),
+    VIEWER_TOKEN_TTL_SECONDS: numeric('VIEWER_TOKEN_TTL_SECONDS', 900),
+    CONTROL_LEASE_TTL_SECONDS: numeric('CONTROL_LEASE_TTL_SECONDS', 120),
+    RUN_BROWSER_TTL_SECONDS: numeric('RUN_BROWSER_TTL_SECONDS', 3600),
+    EVENT_RETENTION_SECONDS: numeric('EVENT_RETENTION_SECONDS', 86400),
+    DEALPILOT_PUBLIC_ORIGIN:
+      config.DEALPILOT_PUBLIC_ORIGIN ?? 'http://localhost:8080',
   };
   const validated = plainToInstance(EnvironmentVariables, normalized);
   const errors = validateSync(validated, { skipMissingProperties: false });
@@ -147,6 +172,25 @@ export function validateEnvironment(config: Record<string, unknown>) {
     throw new Error(
       'INTERNAL_TOKEN and VIEWER_TOKEN_SECRET must be provided in production',
     );
+  }
+  if (
+    validated.NODE_ENV === NodeEnvironment.Production &&
+    (!validated.DATABASE_ENABLED ||
+      !config.DATABASE_URL ||
+      !config.AI_SERVICE_URL ||
+      !config.DEALPILOT_PUBLIC_ORIGIN)
+  ) {
+    throw new Error(
+      'DATABASE_ENABLED, DATABASE_URL, AI_SERVICE_URL, and DEALPILOT_PUBLIC_ORIGIN are required in production',
+    );
+  }
+  if (
+    validated.NODE_ENV === NodeEnvironment.Production &&
+    (validated.JWT_SECRET === validated.VIEWER_TOKEN_SECRET ||
+      validated.JWT_SECRET === validated.INTERNAL_TOKEN ||
+      validated.VIEWER_TOKEN_SECRET === validated.INTERNAL_TOKEN)
+  ) {
+    throw new Error('JWT, viewer, and internal secrets must be distinct');
   }
   return normalized;
 }

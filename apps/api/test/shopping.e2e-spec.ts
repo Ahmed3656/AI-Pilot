@@ -49,7 +49,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
 
   it('fixes the catalog, market, and currency to Egypt', async () => {
     const merchants = await request(app.getHttpServer() as Server)
-      .get('/v1/shopping/merchants')
+      .get('/api/v1/shopping/merchants')
       .expect(200);
     expect(merchants.body).toHaveLength(5);
     expect(merchants.body).toEqual(
@@ -68,7 +68,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
     );
 
     await request(app.getHttpServer() as Server)
-      .post('/v1/shopping/runs')
+      .post('/api/v1/shopping/runs')
       .send({
         category: 'retail',
         query: 'television',
@@ -82,7 +82,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
     const created = await createRun('food', 'Order dinner');
     const runId = created.id as string;
     await request(app.getHttpServer() as Server)
-      .post(`/v1/shopping/runs/${runId}/domains/approve`)
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
       .send({ domains: ['talabat.com'] })
       .expect(409);
 
@@ -99,7 +99,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
     });
 
     const approved = await request(app.getHttpServer() as Server)
-      .post(`/v1/shopping/runs/${runId}/domains/approve`)
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
       .send({ domains: ['talabat.com'] })
       .expect(200);
     const approvedBody = approved.body as ApprovalResponseBody;
@@ -127,7 +127,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
       postalCode: '11765',
     };
     const grant = await request(app.getHttpServer() as Server)
-      .post(`/v1/shopping/runs/${runId}/address-grant`)
+      .post(`/api/v1/shopping/runs/${runId}/address-grant`)
       .send({ address, merchantDomains: ['talabat.com'] })
       .expect(200);
     const grantBody = grant.body as ApprovalResponseBody;
@@ -163,7 +163,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
     });
 
     const report = await request(app.getHttpServer() as Server)
-      .get(`/v1/shopping/runs/${runId}/report`)
+      .get(`/api/v1/shopping/runs/${runId}/report`)
       .expect(200);
     const reportText = JSON.stringify(report.body);
     for (const plaintext of Object.values(address).filter(
@@ -181,7 +181,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
       }),
     ).expect(202);
     await request(app.getHttpServer() as Server)
-      .post(`/v1/shopping/runs/${runId}/domains/approve`)
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
       .send({ domains: ['voxcinemas.com'] })
       .expect(200);
     await postAiEvent(
@@ -190,7 +190,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
       }),
     ).expect(202);
     const response = await request(app.getHttpServer() as Server)
-      .post(`/v1/shopping/runs/${runId}/seat-hold/approve`)
+      .post(`/api/v1/shopping/runs/${runId}/seat-hold/approve`)
       .send({ merchantDomain: 'voxcinemas.com', offerId: 'offer-1' })
       .expect(200);
     const responseBody = response.body as ApprovalResponseBody;
@@ -212,24 +212,27 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
     ).expect(202);
 
     const issued = await request(app.getHttpServer() as Server)
-      .get(`/v1/shopping/runs/${runId}/viewer-token`)
+      .get(`/api/v1/shopping/runs/${runId}/viewer-token`)
       .query({ mode: 'control' })
       .expect(200);
     const issuedBody = issued.body as ViewerTokenResponseBody;
     expect(issuedBody.mode).toBe('control');
+    expect(issued.headers['set-cookie']?.[0]).toMatch(
+      /^dealpilot_viewer=[^;]+; Path=\/viewer; HttpOnly; SameSite=Strict$/,
+    );
     expect(
       new Date(issuedBody.expiresAt).getTime() - Date.now(),
     ).toBeGreaterThan(14 * 60 * 1000);
     const current = await request(app.getHttpServer() as Server)
-      .get(`/v1/shopping/runs/${runId}`)
+      .get(`/api/v1/shopping/runs/${runId}`)
       .expect(200);
     const currentBody = current.body as RunResponseBody;
     expect(currentBody.state).toBe('user_takeover');
 
     const authorization = await request(app.getHttpServer() as Server)
-      .get('/internal/v1/viewer/authorize')
+      .post('/internal/v1/viewer/authorize')
       .set('X-Internal-Token', INTERNAL_TOKEN)
-      .query({ token: issuedBody.token })
+      .set('Authorization', `Bearer ${issuedBody.token}`)
       .expect(200);
     expect(authorization.body).toMatchObject({
       authorized: true,
@@ -237,18 +240,39 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
       mode: 'control',
     });
     await request(app.getHttpServer() as Server)
-      .get('/internal/v1/viewer/authorize')
+      .post('/internal/v1/viewer/authorize')
       .set('X-Internal-Token', INTERNAL_TOKEN)
-      .query({ token: `${issuedBody.token}x` })
+      .set('Cookie', `dealpilot_viewer=${issuedBody.token}x`)
+      .expect(401);
+
+    await request(app.getHttpServer() as Server)
+      .post('/internal/v1/viewer/authorize')
+      .set('X-Internal-Token', INTERNAL_TOKEN)
+      .query({ token: issuedBody.token })
       .expect(401);
 
     const handshake = await websocketHandshake(
       baseUrl,
-      `/v1/shopping/runs/${runId}/events?token=${encodeURIComponent(
-        issuedBody.token,
-      )}`,
+      `/api/v1/shopping/runs/${runId}/events`,
+      ['dealpilot.events.v1', `bearer.${issuedBody.token}`],
     );
     expect(handshake).toContain('101 Switching Protocols');
+    expect(handshake).toContain('Sec-WebSocket-Protocol: dealpilot.events.v1');
+    expect(handshake).not.toContain(`bearer.${issuedBody.token}`);
+
+    await request(app.getHttpServer() as Server)
+      .post(`/api/v1/shopping/runs/${runId}/control`)
+      .send({ action: 'release_control' })
+      .expect(200);
+    await request(app.getHttpServer() as Server)
+      .post('/internal/v1/viewer/authorize')
+      .set('X-Internal-Token', INTERNAL_TOKEN)
+      .set('Authorization', `Bearer ${issuedBody.token}`)
+      .expect(403);
+
+    await request(app.getHttpServer() as Server)
+      .get('/v1/shopping/merchants')
+      .expect(404);
   });
 
   async function createRun(
@@ -256,7 +280,7 @@ describe('DealPilot Egypt shopping control plane (e2e)', () => {
     query: string,
   ): Promise<Record<string, unknown>> {
     const response = await request(app.getHttpServer() as Server)
-      .post('/v1/shopping/runs')
+      .post('/api/v1/shopping/runs')
       .send({ category, query, market: 'EG', currency: 'EGP' })
       .expect(201);
     return response.body as Record<string, unknown>;
@@ -288,6 +312,7 @@ function event(
 async function websocketHandshake(
   baseUrl: string,
   path: string,
+  protocols: string[],
 ): Promise<string> {
   const url = new URL(baseUrl);
   return new Promise((resolve, reject) => {
@@ -300,6 +325,7 @@ async function websocketHandshake(
           'Connection: Upgrade',
           'Sec-WebSocket-Version: 13',
           'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+          `Sec-WebSocket-Protocol: ${protocols.join(', ')}`,
           '\r\n',
         ].join('\r\n'),
       );

@@ -41,7 +41,17 @@ export function configuration() {
         process.env.VIEWER_TOKEN_SECRET ??
         process.env.JWT_SECRET ??
         'local-development-secret-change-before-production',
+      viewerTtlSeconds: Number(process.env.VIEWER_TOKEN_TTL_SECONDS ?? 900),
       addressTtlMs: Number(process.env.ADDRESS_SECRET_TTL_MS ?? 30 * 60 * 1000),
+      controlLeaseTtlSeconds: Number(
+        process.env.CONTROL_LEASE_TTL_SECONDS ?? 120,
+      ),
+      runBrowserTtlSeconds: Number(process.env.RUN_BROWSER_TTL_SECONDS ?? 3600),
+      eventRetentionSeconds: Number(
+        process.env.EVENT_RETENTION_SECONDS ?? 86400,
+      ),
+      publicOrigin:
+        process.env.DEALPILOT_PUBLIC_ORIGIN ?? 'http://localhost:8080',
     },
   };
 }

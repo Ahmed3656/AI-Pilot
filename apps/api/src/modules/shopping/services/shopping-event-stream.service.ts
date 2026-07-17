@@ -10,7 +10,9 @@ import { Socket } from 'node:net';
 import { RunEvent } from '../entities';
 import { ViewerTokenService } from './viewer-token.service';
 
-const EVENTS_PATH = /^\/(?:api\/)?v1\/shopping\/runs\/([^/]+)\/events$/;
+const EVENTS_PATH = /^\/api\/v1\/shopping\/runs\/([^/]+)\/events$/;
+const EVENTS_PROTOCOL = 'dealpilot.events.v1';
+const BEARER_PROTOCOL_PREFIX = 'bearer.';
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 @Injectable()
@@ -64,13 +66,20 @@ export class ShoppingEventStreamService
     const match = EVENTS_PATH.exec(requestUrl.pathname);
     if (!match) return;
     const runId = decodeURIComponent(match[1]);
-    const token = requestUrl.searchParams.get('token');
+    const protocols = String(request.headers['sec-websocket-protocol'] ?? '')
+      .split(',')
+      .map((protocol) => protocol.trim());
+    const tokenProtocol = protocols.find((protocol) =>
+      protocol.startsWith(BEARER_PROTOCOL_PREFIX),
+    );
+    const token = tokenProtocol?.slice(BEARER_PROTOCOL_PREFIX.length);
     const key = request.headers['sec-websocket-key'];
     if (
       request.headers.upgrade?.toLowerCase() !== 'websocket' ||
       request.headers['sec-websocket-version'] !== '13' ||
       typeof key !== 'string' ||
-      !token
+      !token ||
+      !protocols.includes(EVENTS_PROTOCOL)
     ) {
       rejectUpgrade(socket, 401, 'Unauthorized');
       return;
@@ -91,6 +100,7 @@ export class ShoppingEventStreamService
         'Upgrade: websocket',
         'Connection: Upgrade',
         `Sec-WebSocket-Accept: ${accept}`,
+        `Sec-WebSocket-Protocol: ${EVENTS_PROTOCOL}`,
         '\r\n',
       ].join('\r\n'),
     );

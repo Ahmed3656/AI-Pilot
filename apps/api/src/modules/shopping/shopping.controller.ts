@@ -8,6 +8,8 @@ import {
   Param,
   Post,
   Query,
+  Req,
+  Res,
 } from '@nestjs/common';
 import {
   ApiOperation,
@@ -16,6 +18,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Request, Response } from 'express';
 import { Public } from '../../core/decorators/public.decorator';
 import {
   AddressGrantDto,
@@ -91,8 +94,25 @@ export class ShoppingController {
 
   @Get('runs/:id/viewer-token')
   @ApiOperation({ summary: 'Issue a 15-minute view or control viewer token' })
-  viewerToken(@Param('id') id: string, @Query() query: ViewerTokenQueryDto) {
-    return this.shopping.viewerToken(id, query.mode);
+  async viewerToken(
+    @Param('id') id: string,
+    @Query() query: ViewerTokenQueryDto,
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.shopping.viewerToken(id, query.mode);
+    const forwardedProtocol = request
+      .header('x-forwarded-proto')
+      ?.split(',')[0]
+      .trim()
+      .toLowerCase();
+    response.cookie('dealpilot_viewer', result.token, {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: request.secure || forwardedProtocol === 'https',
+      path: '/viewer',
+    });
+    return result;
   }
 
   @Get('runs/:id/report')
@@ -105,7 +125,7 @@ export class ShoppingController {
 
   @Get('runs/:id/events')
   @ApiOperation({
-    summary: 'WebSocket event stream; connect with ?token=<viewer-token>',
+    summary: 'WebSocket event stream authenticated with bearer subprotocol',
   })
   websocketOnly(): never {
     throw new HttpException('WebSocket upgrade required', 426);
