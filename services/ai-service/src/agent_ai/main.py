@@ -1,16 +1,36 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from agent_ai.api.router import api_router
 from agent_ai.config.settings import get_settings
+from agent_ai.orchestrator import RunManager
+from agent_ai.orchestrator.control_client import ControlAPIClient
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):  # type: ignore[no-untyped-def]
+        yield
+        await application.state.run_manager.aclose()
+        await application.state.control_client.aclose()
+
     application = FastAPI(
         title=settings.service_name,
         version="0.1.0",
-        description="Foundational AI service. Agent behavior is intentionally absent.",
+        description="DealPilot Egypt Phase 1 browser agent.",
+        lifespan=lifespan,
     )
+    control = ControlAPIClient(
+        settings.control_api_url,
+        settings.internal_token,
+        timeout=settings.request_timeout_seconds,
+    )
+    application.state.settings = settings
+    application.state.control_client = control
+    application.state.run_manager = RunManager(settings, control)
     application.include_router(api_router)
     return application
 
