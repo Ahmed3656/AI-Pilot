@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
+import { useQuery } from '@tanstack/react-query';
 import { AppButton, Card, Screen } from '@/components';
 import { useToast } from '@/components/Toast';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -8,18 +9,17 @@ import { useAuth } from '@/contexts/AuthContext';
 import { MessageKey, useLocalization } from '@/localization';
 import { ApprovalCard } from '../components/ApprovalCard';
 import { RemoteBrowser } from '../components/RemoteBrowser';
-import { RunTimeline, ScreenshotGallery } from '../components/RunTimeline';
+import { RunTimeline } from '../components/RunTimeline';
+import { LanguageToggle, SectionHeading } from '../components/ShoppingControls';
 import {
-  LanguageToggle,
-  SectionHeading,
-} from '../components/ShoppingControls';
-import {
-  decideApproval,
-  declineAddressShare,
+  approveDomains,
+  approveSeatHold,
+  getShoppingReport,
   sendRunAction,
   shareAddressAfterExplicitConsent,
+  submitClarification,
 } from '../shopping.service';
-import { RunApproval, RunStatus } from '../types';
+import { EventEnvelope, RunStatus } from '../types';
 import { RunConnectionState, useShoppingRun } from '../useShoppingRun';
 
 const connectionKeys: Record<RunConnectionState, MessageKey> = {
@@ -31,13 +31,28 @@ const connectionKeys: Record<RunConnectionState, MessageKey> = {
 };
 
 const statusKeys: Record<RunStatus, MessageKey> = {
-  queued: 'queued',
-  running: 'running',
+  clarifying: 'clarifying',
+  discovering: 'discovering',
+  awaiting_domain_approval: 'awaitingDomainApproval',
+  comparing: 'comparing',
+  awaiting_address_consent: 'awaitingAddressConsent',
+  awaiting_seat_hold_approval: 'awaitingSeatHoldApproval',
+  coupon_testing: 'couponTesting',
+  ready_for_handoff: 'readyForHandoff',
+  user_takeover: 'userTakeover',
   paused: 'paused',
   completed: 'completed',
   cancelled: 'cancelled',
   failed: 'failed',
 };
+
+function latestExpiredLease(events: EventEnvelope[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === 'control.lease_expired') return event.payload.leaseId;
+  }
+  return undefined;
+}
 
 export function ShoppingRunScreen() {
   const params = useLocalSearchParams<{ id: string | string[] }>();
@@ -47,9 +62,18 @@ export function ShoppingRunScreen() {
   const { user } = useAuth();
   const addressOwnerId = user?.id ?? 'guest';
   const { t, textDirection, rowDirection } = useLocalization();
-  const { snapshot, connection, error, applySnapshot } = useShoppingRun(
-    runId ?? '',
-  );
+  const { snapshot, connection, error, applyRun } = useShoppingRun(runId ?? '');
+  const report = useQuery({
+    queryKey: ['shopping-report-live', runId],
+    queryFn: () => getShoppingReport(runId ?? ''),
+    enabled: Boolean(runId && snapshot),
+    refetchInterval:
+      snapshot &&
+      !['completed', 'cancelled', 'failed'].includes(snapshot.status)
+        ? 5_000
+        : false,
+    retry: false,
+  });
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const loadErrorShown = useRef(false);
 
@@ -62,11 +86,13 @@ export function ShoppingRunScreen() {
     }
   }, [error, showToast, snapshot, t]);
 
-  const runAction = async (action: 'pause' | 'resume' | 'cancel') => {
+  const runAction = async (
+    action: 'pause' | 'resume' | 'cancel' | 'complete',
+  ) => {
     if (!runId) return;
     setBusyAction(action);
     try {
-      applySnapshot(await sendRunAction(runId, action));
+      applyRun(await sendRunAction(runId, action));
     } catch {
       showToast(t('runActionFailed'), 'error');
     } finally {
@@ -74,34 +100,16 @@ export function ShoppingRunScreen() {
     }
   };
 
-  const decide = async (
-    approval: RunApproval,
-    decision: 'approved' | 'declined',
+  const submitPendingAction = async (
+    kind: string,
+    task: () => Promise<
+      { run: Parameters<typeof applyRun>[0] } | Parameters<typeof applyRun>[0]
+    >,
   ) => {
-    if (!runId) return;
-    setBusyAction(approval.id);
+    setBusyAction(kind);
     try {
-      if (approval.type === 'address_share') {
-        const next =
-          decision === 'approved'
-            ? await shareAddressAfterExplicitConsent(
-                runId,
-                approval.id,
-                approval.merchant.id,
-                addressOwnerId,
-                true,
-              )
-            : await declineAddressShare(
-                runId,
-                approval.id,
-                approval.merchant.id,
-              );
-        applySnapshot(next);
-      } else {
-        applySnapshot(
-          await decideApproval(runId, approval.id, approval.type, decision),
-        );
-      }
+      const result = await task();
+      applyRun('run' in result ? result.run : result);
     } catch (reason) {
       const addressMissing =
         reason instanceof Error && reason.message === 'ADDRESS_PROFILE_MISSING';
@@ -114,11 +122,10 @@ export function ShoppingRunScreen() {
     }
   };
 
-  const pendingApprovals =
-    snapshot?.approvals.filter((item) => item.status === 'pending') ?? [];
   const terminal = snapshot
     ? ['completed', 'cancelled', 'failed'].includes(snapshot.status)
     : false;
+  const pendingAction = snapshot?.pendingAction;
 
   return (
     <Screen>
@@ -202,54 +209,158 @@ export function ShoppingRunScreen() {
               style={styles.control}
               variant="danger"
             />
+            <AppButton
+              disabled={
+                Boolean(busyAction) ||
+                !['ready_for_handoff', 'user_takeover'].includes(
+                  snapshot.status,
+                )
+              }
+              label={t('finishSession')}
+              onPress={() => void runAction('complete')}
+              style={styles.control}
+              variant="secondary"
+            />
           </View>
-          {pendingApprovals.length > 0 ? (
+
+          {pendingAction && pendingAction.type !== 'handoff' ? (
             <View style={styles.section}>
               <SectionHeading title={t('approvals')} />
-              {pendingApprovals.map((approval) => (
-                <ApprovalCard
-                  approval={approval}
-                  busy={busyAction === approval.id}
-                  key={approval.id}
-                  onDecision={(decision) => void decide(approval, decision)}
-                />
-              ))}
+              <ApprovalCard
+                action={pendingAction}
+                busy={busyAction === pendingAction.requestId}
+                onAddress={() =>
+                  void submitPendingAction(pendingAction.requestId, () =>
+                    shareAddressAfterExplicitConsent(
+                      snapshot.id,
+                      pendingAction.requestId,
+                      pendingAction.type === 'address_consent'
+                        ? pendingAction.merchantDomains
+                        : [],
+                      addressOwnerId,
+                    ),
+                  )
+                }
+                onClarification={(answers) =>
+                  void submitPendingAction(pendingAction.requestId, () =>
+                    submitClarification(
+                      snapshot.id,
+                      pendingAction.requestId,
+                      answers,
+                    ),
+                  )
+                }
+                onDomains={(domains) =>
+                  void submitPendingAction(pendingAction.requestId, () =>
+                    approveDomains(
+                      snapshot.id,
+                      pendingAction.requestId,
+                      domains,
+                    ),
+                  )
+                }
+                onSeatHold={() =>
+                  void submitPendingAction(pendingAction.requestId, () =>
+                    pendingAction.type === 'seat_hold_approval'
+                      ? approveSeatHold(
+                          snapshot.id,
+                          pendingAction.requestId,
+                          pendingAction.offerId,
+                          pendingAction.merchantDomain,
+                        )
+                      : Promise.reject(new Error('INVALID_PENDING_ACTION')),
+                  )
+                }
+              />
             </View>
           ) : null}
 
-          <RemoteBrowser runId={runId} viewerUrl={snapshot.remoteViewerUrl} />
-
-          {snapshot.warnings.length > 0 ? (
+          {pendingAction?.type === 'handoff' ? (
             <Card>
-              <SectionHeading title={t('warnings')} />
-              {snapshot.warnings.map((warning, index) => (
-                <Text
-                  key={`${index}-${warning}`}
-                  style={[
-                    styles.listItem,
-                    textDirection,
-                    { color: theme.colors.warning },
-                  ]}
-                >
-                  • {warning}
-                </Text>
-              ))}
+              <Text
+                style={[
+                  styles.handoff,
+                  textDirection,
+                  { color: theme.colors.warning },
+                ]}
+              >
+                {t('handoffReady')}
+              </Text>
             </Card>
           ) : null}
 
-          {snapshot.partialResults.length > 0 ? (
+          <RemoteBrowser
+            expiredLeaseId={latestExpiredLease(snapshot.events)}
+            onRunChanged={applyRun}
+            runId={snapshot.id}
+            status={snapshot.status}
+          />
+
+          {snapshot.failure ? (
             <Card>
-              <SectionHeading title={t('partialResults')} />
-              {snapshot.partialResults.map((result, index) => (
+              <SectionHeading title={t('failure')} />
+              <Text
+                style={[
+                  styles.listItem,
+                  textDirection,
+                  { color: theme.colors.danger },
+                ]}
+              >
+                {snapshot.failure.code} · {snapshot.failure.message}
+              </Text>
+            </Card>
+          ) : null}
+
+          {report.data?.merchantAttempts.length ? (
+            <Card>
+              <SectionHeading title={t('merchantProgress')} />
+              {report.data.merchantAttempts.map((attempt) => (
                 <Text
-                  key={`${index}-${result}`}
+                  key={attempt.id}
                   style={[
                     styles.listItem,
                     textDirection,
                     { color: theme.colors.text },
                   ]}
                 >
-                  • {result}
+                  • {attempt.merchantName} · {attempt.outcome}
+                  {attempt.failureCode ? ` · ${attempt.failureCode}` : ''}
+                </Text>
+              ))}
+            </Card>
+          ) : null}
+
+          {report.data?.warnings.length ? (
+            <Card>
+              <SectionHeading title={t('warnings')} />
+              {report.data.warnings.map((warning) => (
+                <Text
+                  key={`${warning.code}-${warning.message}`}
+                  style={[
+                    styles.listItem,
+                    textDirection,
+                    { color: theme.colors.warning },
+                  ]}
+                >
+                  • {warning.code} · {warning.message}
+                </Text>
+              ))}
+            </Card>
+          ) : null}
+
+          {report.data?.partialFailures.length ? (
+            <Card>
+              <SectionHeading title={t('partialFailures')} />
+              {report.data.partialFailures.map((failure) => (
+                <Text
+                  key={`${failure.merchantAttemptId}-${failure.code}`}
+                  style={[
+                    styles.listItem,
+                    textDirection,
+                    { color: theme.colors.warning },
+                  ]}
+                >
+                  • {failure.code} · {failure.message}
                 </Text>
               ))}
             </Card>
@@ -259,13 +370,6 @@ export function ShoppingRunScreen() {
             <SectionHeading title={t('timeline')} />
             <RunTimeline events={snapshot.events} />
           </Card>
-
-          {snapshot.screenshots.length > 0 ? (
-            <View style={styles.section}>
-              <SectionHeading title={t('screenshots')} />
-              <ScreenshotGallery screenshots={snapshot.screenshots} />
-            </View>
-          ) : null}
 
           <AppButton
             label={t('openReport')}
@@ -306,4 +410,5 @@ const styles = StyleSheet.create({
   control: { minWidth: 100, flexGrow: 1 },
   section: { gap: 10 },
   listItem: { fontSize: 14, lineHeight: 21 },
+  handoff: { fontSize: 15, lineHeight: 22, fontWeight: '800' },
 });

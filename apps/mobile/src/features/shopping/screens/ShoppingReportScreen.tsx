@@ -7,9 +7,10 @@ import { useToast } from '@/components/Toast';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useLocalization } from '@/localization';
 import { CandidateCard } from '../components/CandidateCard';
-import { LanguageToggle } from '../components/ShoppingControls';
+import { EvidenceGallery } from '../components/RunTimeline';
+import { LanguageToggle, SectionHeading } from '../components/ShoppingControls';
 import { formatEGP } from '../currency';
-import { lowestVerifiedTotal, withPhaseOneMerchants } from '../report';
+import { presentOffers } from '../report';
 import { getShoppingReport } from '../shopping.service';
 
 export function ShoppingReportScreen() {
@@ -22,6 +23,8 @@ export function ShoppingReportScreen() {
     queryKey: ['shopping-report', runId],
     queryFn: () => getShoppingReport(runId ?? ''),
     enabled: Boolean(runId),
+    refetchInterval: (query) =>
+      query.state.data?.status === 'in_progress' ? 5_000 : false,
   });
   const errorShown = useRef(false);
   useEffect(() => {
@@ -32,8 +35,7 @@ export function ShoppingReportScreen() {
       errorShown.current = false;
     }
   }, [report.isError, showToast, t]);
-  const candidates = report.data ? withPhaseOneMerchants(report.data) : [];
-  const lowest = lowestVerifiedTotal(candidates);
+  const offers = report.data ? presentOffers(report.data) : [];
 
   return (
     <Screen>
@@ -72,28 +74,206 @@ export function ShoppingReportScreen() {
                 { color: theme.colors.text },
               ]}
             >
-              {lowest === null ? t('noVerifiedTotal') : t('lowestVerified')}
+              {report.data.conclusion?.statement ?? t('reportInProgress')}
             </Text>
-            {lowest !== null ? (
-              <Text
-                style={[styles.claimTotal, { color: theme.colors.success }]}
-              >
-                {formatEGP(lowest, locale)}
-              </Text>
-            ) : null}
+            <Text
+              style={[
+                styles.reportMeta,
+                textDirection,
+                { color: theme.colors.muted },
+              ]}
+            >
+              {report.data.category ?? t('auto')} · {report.data.market} ·{' '}
+              {report.data.currency} · {report.data.status}
+            </Text>
           </Card>
 
-          <View style={styles.cards}>
-            {candidates.map((candidate) => (
-              <CandidateCard
-                candidate={candidate}
-                isLowest={
-                  lowest !== null && candidate.breakdown.total === lowest
-                }
-                key={candidate.id}
-              />
+          <View style={styles.section}>
+            <SectionHeading title={t('merchantProgress')} />
+            {report.data.merchantAttempts.map((attempt) => (
+              <Card key={attempt.id}>
+                <Text
+                  style={[
+                    styles.itemTitle,
+                    textDirection,
+                    { color: theme.colors.text },
+                  ]}
+                >
+                  {attempt.merchantName} · {attempt.merchantDomain}
+                </Text>
+                <Text
+                  style={[
+                    styles.itemBody,
+                    textDirection,
+                    {
+                      color:
+                        attempt.outcome === 'succeeded'
+                          ? theme.colors.success
+                          : theme.colors.warning,
+                    },
+                  ]}
+                >
+                  {attempt.outcome}
+                  {attempt.failureCode ? ` · ${attempt.failureCode}` : ''}
+                </Text>
+                {attempt.message ? (
+                  <Text
+                    style={[
+                      styles.itemBody,
+                      textDirection,
+                      { color: theme.colors.muted },
+                    ]}
+                  >
+                    {attempt.message}
+                  </Text>
+                ) : null}
+              </Card>
             ))}
           </View>
+
+          <View style={styles.section}>
+            <SectionHeading title={t('offers')} />
+            {offers.length ? (
+              offers.map(({ offer, validity, isWinner }) => (
+                <View key={offer.id} style={styles.offerGroup}>
+                  <Text
+                    style={[
+                      styles.validity,
+                      textDirection,
+                      {
+                        color:
+                          validity === 'valid'
+                            ? theme.colors.success
+                            : theme.colors.warning,
+                      },
+                    ]}
+                  >
+                    {t(validity)}
+                  </Text>
+                  <CandidateCard
+                    isWinner={isWinner}
+                    offer={offer}
+                    validity={validity}
+                  />
+                </View>
+              ))
+            ) : (
+              <Text style={[textDirection, { color: theme.colors.muted }]}>
+                {t('noOffers')}
+              </Text>
+            )}
+          </View>
+
+          {report.data.couponAttempts.length ? (
+            <View style={styles.section}>
+              <SectionHeading title={t('couponAttempts')} />
+              {report.data.couponAttempts.map((coupon) => (
+                <Card key={coupon.id}>
+                  <Text
+                    style={[
+                      styles.itemTitle,
+                      textDirection,
+                      { color: theme.colors.text },
+                    ]}
+                  >
+                    {coupon.code} · {coupon.merchantDomain}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.itemBody,
+                      textDirection,
+                      {
+                        color:
+                          coupon.status === 'verified'
+                            ? theme.colors.success
+                            : theme.colors.warning,
+                      },
+                    ]}
+                  >
+                    {coupon.status}
+                    {coupon.rejectionReason
+                      ? ` · ${coupon.rejectionReason}`
+                      : ''}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.itemBody,
+                      textDirection,
+                      { color: theme.colors.muted },
+                    ]}
+                  >
+                    {formatEGP(coupon.beforeTotal, locale)} →{' '}
+                    {formatEGP(coupon.afterTotal, locale)} · {t('discount')}{' '}
+                    {formatEGP(coupon.verifiedDiscount, locale)}
+                  </Text>
+                  {coupon.message ? (
+                    <Text
+                      style={[
+                        styles.itemBody,
+                        textDirection,
+                        { color: theme.colors.muted },
+                      ]}
+                    >
+                      {coupon.message}
+                    </Text>
+                  ) : null}
+                  <Text
+                    style={[
+                      styles.evidenceIds,
+                      textDirection,
+                      { color: theme.colors.muted },
+                    ]}
+                  >
+                    {t('evidence')}: {coupon.evidenceIds.join(', ')}
+                  </Text>
+                </Card>
+              ))}
+            </View>
+          ) : null}
+
+          {report.data.warnings.length ? (
+            <Card>
+              <SectionHeading title={t('warnings')} />
+              {report.data.warnings.map((warning) => (
+                <Text
+                  key={`${warning.code}-${warning.message}`}
+                  style={[
+                    styles.itemBody,
+                    textDirection,
+                    { color: theme.colors.warning },
+                  ]}
+                >
+                  • {warning.code} · {warning.message}
+                </Text>
+              ))}
+            </Card>
+          ) : null}
+
+          {report.data.partialFailures.length ? (
+            <Card>
+              <SectionHeading title={t('partialFailures')} />
+              {report.data.partialFailures.map((failure) => (
+                <Text
+                  key={`${failure.merchantAttemptId}-${failure.code}`}
+                  style={[
+                    styles.itemBody,
+                    textDirection,
+                    { color: theme.colors.warning },
+                  ]}
+                >
+                  • {failure.code} · {failure.message} ·{' '}
+                  {failure.retryable ? t('retryable') : t('notRetryable')}
+                </Text>
+              ))}
+            </Card>
+          ) : null}
+
+          {report.data.evidence.length ? (
+            <View style={styles.section}>
+              <SectionHeading title={t('evidence')} />
+              <EvidenceGallery evidence={report.data.evidence} />
+            </View>
+          ) : null}
         </>
       ) : null}
     </Screen>
@@ -111,7 +291,12 @@ const styles = StyleSheet.create({
   brand: { fontSize: 16, fontWeight: '900' },
   title: { fontSize: 30, lineHeight: 36, fontWeight: '800' },
   subtitle: { fontSize: 15, lineHeight: 22 },
-  claimLabel: { fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  claimTotal: { fontSize: 25, fontWeight: '900' },
-  cards: { gap: 12 },
+  claimLabel: { fontSize: 16, lineHeight: 23, fontWeight: '800' },
+  reportMeta: { fontSize: 12, lineHeight: 18 },
+  section: { gap: 10 },
+  offerGroup: { gap: 5 },
+  validity: { fontSize: 12, fontWeight: '900', textTransform: 'uppercase' },
+  itemTitle: { fontSize: 15, lineHeight: 21, fontWeight: '800' },
+  itemBody: { fontSize: 13, lineHeight: 19 },
+  evidenceIds: { fontSize: 11, lineHeight: 16 },
 });
