@@ -1,0 +1,8 @@
+node_modules/
+**/dist/
+**/coverage/
+**/.expo/
+apps/mobile/expo-env.d.ts
+.venv/
+.npm-cache/
+.pip-cache/

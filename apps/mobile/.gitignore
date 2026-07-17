@@ -1,0 +1,13 @@
+# Expo-generated state
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Generated native projects (managed workflow)
+android/
+ios/
+
+# Local signing material
+*.jks
+*.keystore
