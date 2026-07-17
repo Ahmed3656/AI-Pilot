@@ -28,10 +28,18 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [isRestoring, setIsRestoring] = useState(true);
 
   useEffect(() => {
-    // TODO(auth): restore user identity from a validated session endpoint.
-    storage
-      .get(STORAGE_KEYS.accessToken)
-      .then(setAccessToken)
+    Promise.all([
+      storage.get(STORAGE_KEYS.accessToken),
+      storage.get(STORAGE_KEYS.authUser),
+    ])
+      .then(([token, serializedUser]) => {
+        setAccessToken(token);
+        if (serializedUser) setUser(JSON.parse(serializedUser) as AuthUser);
+      })
+      .catch(() => {
+        setAccessToken(null);
+        setUser(null);
+      })
       .finally(() => setIsRestoring(false));
   }, []);
 
@@ -39,6 +47,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     await Promise.all([
       storage.set(STORAGE_KEYS.accessToken, session.accessToken),
       storage.set(STORAGE_KEYS.refreshToken, session.refreshToken),
+      storage.set(STORAGE_KEYS.authUser, JSON.stringify(session.user)),
     ]);
     setAccessToken(session.accessToken);
     setUser(session.user);
@@ -48,6 +57,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     await Promise.all([
       storage.remove(STORAGE_KEYS.accessToken),
       storage.remove(STORAGE_KEYS.refreshToken),
+      storage.remove(STORAGE_KEYS.authUser),
     ]);
     setAccessToken(null);
     setUser(null);
@@ -57,7 +67,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     () => ({
       user,
       accessToken,
-      isAuthenticated: Boolean(accessToken),
+      isAuthenticated: Boolean(accessToken && user),
       isRestoring,
       setSession,
       signOut,
