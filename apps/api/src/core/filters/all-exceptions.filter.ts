@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { RequestContextService } from '../request-context/request-context.service';
+import { redactUrl } from '../observability/structured-logger';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -36,7 +37,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     response.status(status).json({
       statusCode: status,
       message,
-      path: request.originalUrl,
+      path: redactUrl(request.originalUrl),
       requestId: this.requestContext.requestId,
       timestamp: new Date().toISOString(),
     });

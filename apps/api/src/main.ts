@@ -1,31 +1,15 @@
-import { RequestMethod, ValidationPipe, VersioningType } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { AppModule } from './app.module';
 import { formatStartupBanner } from './core/bootstrap/startup-banner';
 import { ApplicationLogger } from './core/logging/application.logger';
-import { configureServer } from './server';
+import { configureApiRouting, configureServer } from './server';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.useLogger(app.get(ApplicationLogger));
 
-  app.setGlobalPrefix('api', {
-    exclude: [
-      { path: 'health', method: RequestMethod.ALL },
-      { path: 'health/live', method: RequestMethod.ALL },
-      { path: 'health/ready', method: RequestMethod.ALL },
-    ],
-  });
-  app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
-  app.useGlobalPipes(
-    new ValidationPipe({
-      transform: true,
-      whitelist: true,
-      forbidNonWhitelisted: true,
-    }),
-  );
-
+  configureApiRouting(app);
   configureServer(app);
   app.enableShutdownHooks();
 

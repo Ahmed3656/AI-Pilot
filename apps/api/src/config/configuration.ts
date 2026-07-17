@@ -32,5 +32,16 @@ export function configuration() {
       accessTtl: process.env.JWT_ACCESS_TTL ?? '15m',
       refreshTtl: process.env.JWT_REFRESH_TTL ?? '7d',
     },
+    shopping: {
+      aiBaseUrl: process.env.AI_SERVICE_URL ?? '',
+      internalToken:
+        process.env.INTERNAL_TOKEN ??
+        'local-internal-token-change-before-production',
+      viewerSecret:
+        process.env.VIEWER_TOKEN_SECRET ??
+        process.env.JWT_SECRET ??
+        'local-development-secret-change-before-production',
+      addressTtlMs: Number(process.env.ADDRESS_SECRET_TTL_MS ?? 30 * 60 * 1000),
+    },
   };
 }

@@ -80,6 +80,22 @@ class EnvironmentVariables {
   @IsString()
   @MinLength(32)
   JWT_SECRET = 'local-development-secret-change-before-production';
+
+  @IsOptional()
+  @IsString()
+  AI_SERVICE_URL?: string;
+
+  @IsString()
+  @MinLength(32)
+  INTERNAL_TOKEN = 'local-internal-token-change-before-production';
+
+  @IsString()
+  @MinLength(32)
+  VIEWER_TOKEN_SECRET = 'local-development-secret-change-before-production';
+
+  @IsInt()
+  @Min(1000)
+  ADDRESS_SECRET_TTL_MS = 30 * 60 * 1000;
 }
 
 export function validateEnvironment(config: Record<string, unknown>) {
@@ -108,6 +124,13 @@ export function validateEnvironment(config: Record<string, unknown>) {
     ),
     JWT_SECRET:
       config.JWT_SECRET ?? 'local-development-secret-change-before-production',
+    INTERNAL_TOKEN:
+      config.INTERNAL_TOKEN ?? 'local-internal-token-change-before-production',
+    VIEWER_TOKEN_SECRET:
+      config.VIEWER_TOKEN_SECRET ??
+      config.JWT_SECRET ??
+      'local-development-secret-change-before-production',
+    ADDRESS_SECRET_TTL_MS: numeric('ADDRESS_SECRET_TTL_MS', 30 * 60 * 1000),
   };
   const validated = plainToInstance(EnvironmentVariables, normalized);
   const errors = validateSync(validated, { skipMissingProperties: false });
@@ -116,6 +139,14 @@ export function validateEnvironment(config: Record<string, unknown>) {
   }
   if (validated.NODE_ENV === NodeEnvironment.Production && !config.JWT_SECRET) {
     throw new Error('JWT_SECRET must be provided in production');
+  }
+  if (
+    validated.NODE_ENV === NodeEnvironment.Production &&
+    (!config.INTERNAL_TOKEN || !config.VIEWER_TOKEN_SECRET)
+  ) {
+    throw new Error(
+      'INTERNAL_TOKEN and VIEWER_TOKEN_SECRET must be provided in production',
+    );
   }
   return normalized;
 }

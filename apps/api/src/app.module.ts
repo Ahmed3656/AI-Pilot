@@ -25,6 +25,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { PermissionsModule } from './modules/permissions/permissions.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { ShoppingModule } from './modules/shopping/shopping.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { SystemModule } from './modules/system/system.module';
 import { TasksModule } from './modules/tasks/tasks.module';
@@ -55,6 +56,7 @@ import { WorkflowsModule } from './modules/workflows/workflows.module';
     TasksModule,
     WorkflowsModule,
     SettingsModule,
+    ShoppingModule,
     StorageModule,
     SystemModule,
   ],

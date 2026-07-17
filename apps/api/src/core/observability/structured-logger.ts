@@ -12,7 +12,23 @@ const LEVEL_PRIORITY: Record<ObservabilityLevel, number> = {
   error: 40,
 };
 
-const SENSITIVE_KEY = /password|passphrase|secret|token|authorization|cookie/i;
+const SENSITIVE_KEY =
+  /password|passphrase|secret|token|authorization|cookie|recipientName|mobileNumber|governorate|cityOrArea|street|building|floor|apartment|landmark|postalCode/i;
+
+export function redactUrl(value: string): string {
+  try {
+    const url = new URL(value, 'http://redaction.local');
+    for (const key of url.searchParams.keys()) {
+      if (SENSITIVE_KEY.test(key)) url.searchParams.set(key, '[REDACTED]');
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return value.replace(
+      /([?&](?:password|passphrase|secret|token|authorization|cookie)[^=]*=)[^&]*/gi,
+      '$1[REDACTED]',
+    );
+  }
+}
 
 @Injectable()
 export class StructuredLogger {
@@ -49,7 +65,7 @@ export class StructuredLogger {
     );
     if (LEVEL_PRIORITY[level] < LEVEL_PRIORITY[configured]) return;
 
-    const record = redact({
+    const record = redactStructuredValue({
       timestamp: new Date().toISOString(),
       level,
       service: this.config.get<string>('app.name', 'AI Pilot API'),
@@ -61,17 +77,23 @@ export class StructuredLogger {
   }
 }
 
-function redact(value: unknown, seen = new WeakSet<object>()): unknown {
+export function redactStructuredValue(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): unknown {
   if (typeof value === 'bigint') return value.toString();
   if (!value || typeof value !== 'object') return value;
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => redact(item, seen));
+  if (Array.isArray(value))
+    return value.map((item) => redactStructuredValue(item, seen));
 
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      SENSITIVE_KEY.test(key) ? '[REDACTED]' : redact(item, seen),
+      SENSITIVE_KEY.test(key)
+        ? '[REDACTED]'
+        : redactStructuredValue(item, seen),
     ]),
   );
 }

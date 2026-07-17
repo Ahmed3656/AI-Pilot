@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { Server } from 'node:http';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { configureApiRouting } from '../src/server';
 
 describe('Health endpoints (e2e)', () => {
   let app: INestApplication;
@@ -12,6 +13,7 @@ describe('Health endpoints (e2e)', () => {
       imports: [AppModule],
     }).compile();
     app = moduleRef.createNestApplication();
+    configureApiRouting(app);
     await app.init();
   });
 
