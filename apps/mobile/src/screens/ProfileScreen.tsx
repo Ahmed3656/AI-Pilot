@@ -2,21 +2,28 @@ import { StyleSheet, Text } from 'react-native';
 import { Card, Screen } from '@/components';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
+import { useLocalization } from '@/localization';
 
 export function ProfileScreen() {
   const { user } = useAuth();
   const { theme } = useTheme();
+  const { t, textDirection } = useLocalization();
   return (
     <Screen>
-      <Text style={[styles.title, { color: theme.colors.text }]}>Profile</Text>
+      <Text style={[styles.title, textDirection, { color: theme.colors.text }]}>
+        {t('account')}
+      </Text>
       <Card>
-        <Text style={{ color: theme.colors.text }}>
-          {user?.displayName ?? 'Profile placeholder'}
+        <Text
+          style={[styles.name, textDirection, { color: theme.colors.text }]}
+        >
+          {user?.displayName ?? user?.email}
         </Text>
-        <Text style={{ color: theme.colors.muted }}>
-          TODO(profile): connect identity fields after authentication is
-          implemented.
-        </Text>
+        {user?.displayName && user.email ? (
+          <Text style={[textDirection, { color: theme.colors.muted }]}>
+            {user.email}
+          </Text>
+        ) : null}
       </Card>
     </Screen>
   );
@@ -24,4 +31,5 @@ export function ProfileScreen() {
 
 const styles = StyleSheet.create({
   title: { marginTop: 20, fontSize: 30, fontWeight: '800' },
+  name: { fontSize: 17, fontWeight: '800' },
 });

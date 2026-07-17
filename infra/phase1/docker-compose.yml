@@ -1,0 +1,205 @@
+name: ${COMPOSE_PROJECT_NAME:-dealpilot-phase1}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dealpilot}
+      POSTGRES_USER: ${POSTGRES_USER:-dealpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-phase1-postgres-change-me}
+    expose:
+      - "5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - data-plane
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "3000"
+      DATABASE_ENABLED: "true"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dealpilot}:${POSTGRES_PASSWORD:-phase1-postgres-change-me}@postgres:5432/${POSTGRES_DB:-dealpilot}
+      JWT_SECRET: ${JWT_SECRET:-phase1-local-jwt-secret-change-me-32chars}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-7d}
+      AI_SERVICE_URL: http://ai-service:8000
+      SELENIUM_REMOTE_URL: http://browser:4444/wd/hub
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-phase1-internal-service-token-change-me}
+      VIEWER_AUTH_SHARED_SECRET: ${VIEWER_AUTH_SHARED_SECRET:-phase1-viewer-auth-shared-secret-change-me}
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app-plane
+      - data-plane
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/health/ready')
+          .then((response) => process.exit(response.ok ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  ai-service:
+    build:
+      context: ../../services/ai-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      AI_ENVIRONMENT: ${AI_ENVIRONMENT:-development}
+      AI_HOST: 0.0.0.0
+      AI_PORT: "8000"
+      AI_LOG_LEVEL: ${AI_LOG_LEVEL:-INFO}
+      AI_NEST_API_INTERNAL_URL: http://api:3000
+      AI_SELENIUM_REMOTE_URL: http://browser:4444/wd/hub
+      AI_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-phase1-internal-service-token-change-me}
+    expose:
+      - "8000"
+    depends_on:
+      browser:
+        condition: service_healthy
+    networks:
+      - app-plane
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  browser:
+    image: ${SELENIUM_IMAGE:-selenium/standalone-chromium:4.46.0-20260707}
+    restart: unless-stopped
+    shm_size: 2gb
+    environment:
+      SE_NODE_MAX_SESSIONS: "1"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
+      SE_NODE_SESSION_TIMEOUT: ${SELENIUM_SESSION_TIMEOUT_SECONDS:-900}
+      SE_SESSION_REQUEST_TIMEOUT: ${SELENIUM_REQUEST_TIMEOUT_SECONDS:-30}
+      SE_SCREEN_WIDTH: "1280"
+      SE_SCREEN_HEIGHT: "800"
+      SE_SCREEN_DEPTH: "24"
+      SE_START_XVFB: "true"
+      SE_START_VNC: "true"
+      SE_VNC_NO_PASSWORD: "true"
+      SE_VNC_VIEW_ONLY: "true"
+      SE_MASK_SECRETS: "true"
+      SE_BROWSER_ARGS_WINDOW_SIZE: --window-size=1280,800
+      SE_BROWSER_ARGS_DISABLE_EXTENSIONS: --disable-extensions
+      SE_BROWSER_ARGS_DISABLE_COMPONENT_EXTENSIONS: --disable-component-extensions-with-background-pages
+      SE_BROWSER_ARGS_NO_FIRST_RUN: --no-first-run
+      SE_BROWSER_ARGS_NO_DEFAULT_BROWSER_CHECK: --no-default-browser-check
+    expose:
+      - "4444"
+      - "7900"
+    networks:
+      - app-plane
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/bin/check-grid.sh --host 0.0.0.0 --port 4444",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  gateway:
+    image: ${CADDY_IMAGE:-caddy:2.11.4-alpine}
+    profiles:
+      - local-only
+      - cloud-tunnel
+    restart: unless-stopped
+    init: true
+    environment:
+      VIEWER_AUTH_SHARED_SECRET: ${VIEWER_AUTH_SHARED_SECRET:-phase1-viewer-auth-shared-secret-change-me}
+    ports:
+      - "127.0.0.1:${DEALPILOT_GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - type: bind
+        source: ./Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+    tmpfs:
+      - /config
+      - /data
+    depends_on:
+      api:
+        condition: service_healthy
+      browser:
+        condition: service_healthy
+    networks:
+      - app-plane
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/_gateway/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.7.2}
+    profiles:
+      - cloud-tunnel
+    restart: unless-stopped
+    init: true
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --loglevel
+      - ${CLOUDFLARED_LOG_LEVEL:-info}
+      - --metrics
+      - 0.0.0.0:2000
+      - run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    expose:
+      - "2000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - app-plane
+
+volumes:
+  postgres-data:
+
+networks:
+  app-plane:
+    driver: bridge
+  data-plane:
+    driver: bridge
+    internal: true

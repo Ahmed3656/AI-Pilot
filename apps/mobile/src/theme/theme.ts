@@ -8,6 +8,8 @@ export interface AppTheme {
     primaryText: string;
     border: string;
     success: string;
+    warning: string;
+    warningSurface: string;
     danger: string;
   };
   spacing: { xs: number; sm: number; md: number; lg: number; xl: number };
@@ -24,6 +26,8 @@ export const lightTheme: AppTheme = {
     primaryText: '#FFFFFF',
     border: '#E4E7EC',
     success: '#067647',
+    warning: '#B54708',
+    warningSurface: '#FFFAEB',
     danger: '#B42318',
   },
   spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32 },
@@ -34,11 +38,17 @@ export const darkTheme: AppTheme = {
   ...lightTheme,
   colors: {
     ...lightTheme.colors,
-    background: '#0F172A',
-    surface: '#172033',
-    text: '#F8FAFC',
+    background: '#172033',
+    surface: '#101828',
+    text: '#F7F8FC',
     muted: '#98A2B3',
+    primary: '#A5B4FC',
+    primaryText: '#172033',
     border: '#344054',
+    success: '#6CE9A6',
+    warning: '#FEC84B',
+    warningSurface: '#332B18',
+    danger: '#FDA29B',
   },
 };
 
