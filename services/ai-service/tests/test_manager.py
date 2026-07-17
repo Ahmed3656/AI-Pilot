@@ -72,6 +72,25 @@ class FakeBrowser:
     def close(self) -> None:
         self.closed = True
 
+    def guard(self, category: Category, approved_domains: set[str]) -> None:
+        assert category is Category.RETAIL
+        assert self.expected_domain in approved_domains
+
+
+class CaptchaBrowser(FakeBrowser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.captcha_solved = False
+
+    def navigate(self, *args: Any, **kwargs: Any) -> None:
+        super().navigate(*args, **kwargs)
+        raise PauseRequired(PauseReason.CAPTCHA, "CAPTCHA/human verification detected")
+
+    def guard(self, category: Category, approved_domains: set[str]) -> None:
+        super().guard(category, approved_domains)
+        if not self.captcha_solved:
+            raise PauseRequired(PauseReason.CAPTCHA, "CAPTCHA/human verification detected")
+
 
 class FakeAgent:
     last_response_id = "response-chain-1"
@@ -273,6 +292,66 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     assert browser.closed is True
     assert record.address_handle is None
     assert any(event_type == "offer.recorded" for _, event_type, _, _ in control.events)
+
+
+@pytest.mark.asyncio
+async def test_captcha_pause_allows_takeover_then_continues_same_attempt() -> None:
+    control = FakeControl()
+    browser = CaptchaBrowser()
+    manager = RunManager(
+        Settings(internal_token="token", openrouter_api_key="fake"),
+        control,  # type: ignore[arg-type]
+        agent_factory=FakeAgent,
+        browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]
+    )
+    await manager.create_run(_request(), "run-1")
+    await manager.start("run-1")
+    await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
+    record = manager.get_record("run-1")
+    await manager.command(
+        "run-1",
+        _command(
+            "approve-1",
+            "run-1",
+            "approve_domains",
+            {
+                "approvalId": "approval-1",
+                "requestId": record.domain_request_id,
+                "domains": ["amazon.eg"],
+            },
+        ),
+        "approve-1",
+    )
+    await _wait_for_status(manager, "run-1", RunStatus.PAUSED)
+
+    await manager.command(
+        "run-1",
+        _command("claim-1", "run-1", "pause", {"reason": "control_claim"}),
+        "claim-1",
+    )
+    assert record.status is RunStatus.USER_TAKEOVER
+    browser.captcha_solved = True
+    await manager.command(
+        "run-1",
+        _command("release-1", "run-1", "resume", {"reason": "control_release"}),
+        "release-1",
+    )
+    await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
+
+    completions = [
+        payload
+        for _, event_type, payload, _ in control.events
+        if event_type == "merchant.attempt_completed"
+    ]
+    assert completions == [
+        {
+            "attemptId": record.attempts["amazon.eg"].id,
+            "outcome": "succeeded",
+            "failureCode": None,
+            "evidenceIds": [],
+        }
+    ]
+    await manager.aclose()
 
 
 @pytest.mark.asyncio

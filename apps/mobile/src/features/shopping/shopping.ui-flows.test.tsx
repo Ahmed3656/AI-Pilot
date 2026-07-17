@@ -458,6 +458,9 @@ describe('shopping UI flows', () => {
     const source = screen.getByTestId('webview').props.source;
     expect(source.uri).not.toContain('control-secret');
     expect(source.headers.Authorization).toBe('Bearer control-secret');
+    expect(screen.getByTestId('webview').props.setSupportMultipleWindows).toBe(
+      false,
+    );
 
     view.rerender(
       <RemoteBrowser
@@ -468,5 +471,25 @@ describe('shopping UI flows', () => {
       />,
     );
     await waitFor(() => expect(screen.getByText('viewOnly')).toBeTruthy());
+  });
+
+  it('allows manual browser takeover while automation is paused', async () => {
+    viewerToken.mockResolvedValue({
+      token: 'view-secret',
+      tokenType: 'Bearer',
+      mode: 'view',
+      viewerUrl: 'https://demo.example/viewer/',
+      expiresAt: run.browserExpiresAt,
+    });
+    render(
+      <RemoteBrowser onRunChanged={jest.fn()} runId={run.id} status="paused" />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'takeOver' }).props
+          .accessibilityState.disabled,
+      ).toBe(false),
+    );
   });
 });

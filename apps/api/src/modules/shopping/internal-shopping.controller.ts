@@ -44,17 +44,33 @@ export class InternalShoppingController {
   })
   async authorizeViewer(
     @Headers('authorization') authorization: string | undefined,
+    @Headers('cookie') cookie: string | undefined,
+    @Headers('x-forwarded-proto') forwardedProto: string | undefined,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const match = /^Bearer (\S+)$/.exec(authorization ?? '');
-    if (!match)
+    const bearer = /^Bearer (\S+)$/.exec(authorization ?? '')?.[1];
+    const cookieToken = /(?:^|;\s*)dealpilot_viewer=([^;]+)/.exec(
+      cookie ?? '',
+    )?.[1];
+    const token = bearer ?? cookieToken;
+    if (!token)
       throw new ContractException(
         'INVALID_VIEWER_TOKEN',
         401,
         'Viewer bearer token is required',
       );
-    const authorizationResult = await this.shopping.authorizeViewer(match[1]);
+    const authorizationResult = await this.shopping.authorizeViewer(token);
     response.setHeader('X-DealPilot-Viewer-Mode', authorizationResult.mode);
+    const maxAge = Math.max(
+      1,
+      Math.floor(
+        (new Date(authorizationResult.expiresAt).getTime() - Date.now()) / 1000,
+      ),
+    );
+    response.setHeader(
+      'Set-Cookie',
+      `dealpilot_viewer=${token}; Path=/viewer; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${forwardedProto === 'https' ? '; Secure' : ''}`,
+    );
     return authorizationResult;
   }
 }

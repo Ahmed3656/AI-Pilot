@@ -87,4 +87,67 @@ describe('control lease expiry recovery', () => {
     ).toBe(true);
     service.onModuleDestroy();
   });
+
+  it('hands a safety-paused browser to the user and resumes the interrupted work', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-17T10:00:00.000Z'));
+    const store = new InMemoryShoppingStore();
+    const config = new ConfigService({
+      shopping: {
+        browserTtlSeconds: 3600,
+        controlLeaseTtlSeconds: 120,
+        addressTtlMs: 1_800_000,
+      },
+    });
+    const command = jest.fn().mockResolvedValue('accepted');
+    const service = new ShoppingService(
+      store,
+      new RunStateMachine(),
+      new AddressSecretVaultService(config),
+      { command } as unknown as ShoppingAiClientService,
+      {} as ViewerTokenService,
+      { publish: jest.fn() } as unknown as ShoppingEventStreamService,
+      {} as ShoppingReportService,
+      config,
+    );
+    const run = await store.createRun({
+      id: '01JPAUSEDTAKEOVER000000000',
+      userId: 'user-1',
+      requestedCategory: RequestedCategory.Food,
+      category: ShoppingCategory.Food,
+      market: 'EG',
+      currency: 'EGP',
+      timezone: 'Africa/Cairo',
+      locale: SupportedLocale.EnglishEgypt,
+      query: 'Find dinner',
+      status: ShoppingRunState.Paused,
+      resumeStatus: ShoppingRunState.Comparing,
+      pendingAction: null,
+      failure: null,
+      completedAt: null,
+      browserExpiresAt: new Date('2026-07-17T11:00:00.000Z'),
+      lastEventId: null,
+    });
+
+    const claimed = await service.claimControl('user-1', run.id, {});
+    expect(claimed.run.status).toBe(ShoppingRunState.UserTakeover);
+    const released = await service.releaseControl('user-1', run.id, {
+      leaseId: claimed.lease.id,
+    });
+
+    expect(released.run.status).toBe(ShoppingRunState.Comparing);
+    expect(released.run.resumeStatus).toBeNull();
+    expect(command).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ id: run.id }),
+      'pause',
+      { reason: 'control_claim' },
+    );
+    expect(command).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ id: run.id }),
+      'resume',
+      { reason: 'control_release' },
+    );
+    service.onModuleDestroy();
+  });
 });

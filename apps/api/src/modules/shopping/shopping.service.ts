@@ -408,7 +408,12 @@ export class ShoppingService implements OnModuleDestroy {
 
   async claimControl(userId: string, id: string, dto: ClaimControlDto) {
     const run = await this.getOwnedRun(userId, id);
-    this.requireState(run, ShoppingRunState.ReadyForHandoff);
+    if (
+      ![ShoppingRunState.ReadyForHandoff, ShoppingRunState.Paused].includes(
+        run.status,
+      )
+    )
+      this.invalidTransition();
     if (await this.store.findActiveLease(run.id))
       throw new ContractException(
         'CONTROL_LEASE_CONFLICT',
@@ -479,7 +484,9 @@ export class ShoppingService implements OnModuleDestroy {
       lease.status = ControlLeaseStatus.Recovering;
     await this.ai.command(run, 'resume', { reason: 'control_release' });
     lease.status = ControlLeaseStatus.Released;
-    this.changeStatus(run, ShoppingRunState.ReadyForHandoff);
+    const resumeStatus = run.resumeStatus ?? ShoppingRunState.ReadyForHandoff;
+    this.changeStatus(run, resumeStatus);
+    run.resumeStatus = null;
     await this.store.saveRunAndLease(run, lease);
     this.clearLeaseTimer(run.id);
     const releasedAt = new Date().toISOString();
@@ -766,7 +773,7 @@ export class ShoppingService implements OnModuleDestroy {
           merchantName: merchant.name,
           merchantDomain: merchant.domain,
           category: merchant.category,
-          outcome: 'failed',
+          outcome: 'in_progress',
           failureCode: null,
           message: 'Merchant attempt is still in progress.',
           evidenceIds: [],
@@ -1171,7 +1178,9 @@ export class ShoppingService implements OnModuleDestroy {
       return;
     }
     lease.status = ControlLeaseStatus.Expired;
-    this.changeStatus(run, ShoppingRunState.ReadyForHandoff);
+    const resumeStatus = run.resumeStatus ?? ShoppingRunState.ReadyForHandoff;
+    this.changeStatus(run, resumeStatus);
+    run.resumeStatus = null;
     await this.store.saveRunAndLease(run, lease);
     await this.recordEvent(run, 'control.lease_expired', {
       leaseId,

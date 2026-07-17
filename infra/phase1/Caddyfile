@@ -34,6 +34,9 @@
 
 				@authorized status 2xx
 				handle_response @authorized {
+					copy_response_headers {
+						include Set-Cookie
+					}
 					request_header X-DealPilot-Viewer-Mode {rp.header.X-Dealpilot-Viewer-Mode}
 				}
 			}

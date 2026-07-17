@@ -28,6 +28,7 @@ function noVncUrl(uri: string, viewOnly: boolean): string {
 }
 
 const TERMINAL_STATUSES: RunStatus[] = ['completed', 'cancelled', 'failed'];
+const TAKEOVER_STATUSES: RunStatus[] = ['ready_for_handoff', 'paused'];
 
 export function RemoteBrowser({
   runId,
@@ -197,6 +198,7 @@ export function RemoteBrowser({
           <WebView
             allowsInlineMediaPlayback
             javaScriptEnabled
+            setSupportMultipleWindows={false}
             onShouldStartLoadWithRequest={(request) => {
               try {
                 return new URL(request.url).origin === viewerOrigin;
@@ -233,7 +235,7 @@ export function RemoteBrowser({
       <AppButton
         disabled={
           busy ||
-          (hasControl ? false : status !== 'ready_for_handoff') ||
+          (hasControl ? false : !TAKEOVER_STATUSES.includes(status)) ||
           !viewer
         }
         label={

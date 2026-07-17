@@ -512,6 +512,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('Authorization', `Bearer ${control.body.token}`)
       .expect(200);
     expect(authorization.headers['x-dealpilot-viewer-mode']).toBe('control');
+    const viewerCookie = String(authorization.headers['set-cookie']?.[0] ?? '');
+    expect(viewerCookie).toContain('dealpilot_viewer=');
+    expect(viewerCookie).toContain('HttpOnly');
     expect(authorization.body).toMatchObject({
       authorized: true,
       runId,
@@ -519,6 +522,11 @@ describe('DealPilot canonical API contract (e2e)', () => {
       userId: 'user-1',
       leaseId: claimed.body.lease.id,
     });
+    await request(app.getHttpServer())
+      .post('/internal/v1/viewer/authorize')
+      .set('X-Internal-Token', INTERNAL_TOKEN)
+      .set('Cookie', viewerCookie.split(';', 1)[0])
+      .expect(200);
     const handshake = await websocketHandshake(
       baseUrl,
       `/api/v1/shopping/runs/${runId}/events`,

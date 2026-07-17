@@ -136,7 +136,9 @@ export class ShoppingReportService {
           evidenceIds: stringArray(item.payload.evidenceIds),
         })),
       partialFailures: data.merchantAttempts
-        .filter((item) => item.outcome !== 'succeeded')
+        .filter(
+          (item) => item.finishedAt !== null && item.outcome !== 'succeeded',
+        )
         .map((item) => ({
           merchantAttemptId: item.id,
           code: item.failureCode ?? item.outcome.toUpperCase(),

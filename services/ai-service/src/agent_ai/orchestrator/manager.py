@@ -494,14 +494,14 @@ class RunManager:
         future.set_result(True)
 
     async def _pause_command(self, record: RunRecord, reason: str) -> None:
-        if record.status is RunStatus.PAUSED:
-            return
         if reason == "control_claim":
-            if record.status is not RunStatus.READY_FOR_HANDOFF:
-                raise InvalidTransitionError("control claim requires ready_for_handoff")
+            if record.status not in {RunStatus.READY_FOR_HANDOFF, RunStatus.PAUSED}:
+                raise InvalidTransitionError("control claim requires ready_for_handoff or paused")
             record.active_event.clear()
             async with record.action_lock:
                 record.status = RunStatus.USER_TAKEOVER
+            return
+        if record.status is RunStatus.PAUSED:
             return
         record.resume_status = record.status
         record.active_event.clear()
@@ -512,7 +512,8 @@ class RunManager:
         if reason in {"control_release", "lease_expired"}:
             if record.status is not RunStatus.USER_TAKEOVER:
                 raise InvalidTransitionError("Control release requires user_takeover")
-            record.status = RunStatus.READY_FOR_HANDOFF
+            record.status = record.resume_status or RunStatus.READY_FOR_HANDOFF
+            record.resume_status = None
             record.active_event.set()
             return
         if record.status is not RunStatus.PAUSED:
@@ -701,8 +702,19 @@ class RunManager:
                     separate_tab=record.category is Category.RETAIL,
                 )
             except PauseRequired as exc:
-                await self._pause_for_safety(record, exc)
-                await self._finish_attempt(record, attempt, "safety_paused", exc.reason_code.value)
+                while True:
+                    await self._pause_for_safety(record, exc)
+                    if record.status in TERMINAL_STATUSES:
+                        return
+                    try:
+                        await asyncio.to_thread(
+                            record.browser.guard,
+                            record.category,
+                            record.approved_domains,
+                        )
+                        break
+                    except PauseRequired as next_exc:
+                        exc = next_exc
             except Exception as exc:
                 await self._finish_attempt(record, attempt, "failed", type(exc).__name__.upper())
                 await self.control.emit(
