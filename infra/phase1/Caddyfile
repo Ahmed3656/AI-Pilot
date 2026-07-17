@@ -1,0 +1,64 @@
+{
+	auto_https off
+	admin off
+}
+
+:8080 {
+	encode zstd gzip
+
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	@gateway_health path /_gateway/health
+	handle @gateway_health {
+		respond `{"status":"ok","service":"dealpilot-phase1-gateway"}` 200 {
+			close
+		}
+	}
+
+	@viewer path /viewer /viewer/*
+	handle @viewer {
+		route {
+			forward_auth api:3000 {
+				uri /internal/v1/viewer/authorize
+				header_up X-DealPilot-Viewer-Auth {$VIEWER_AUTH_SHARED_SECRET}
+				copy_headers X-DealPilot-Viewer-Session
+			}
+
+			@viewer_root path /viewer
+			redir @viewer_root /viewer/?autoconnect=1&resize=scale&path=viewer/websockify 308
+
+			uri strip_prefix /viewer
+			reverse_proxy browser:7900 {
+				header_up -Authorization
+				header_up -Cookie
+				header_up -X-DealPilot-Viewer-Session
+			}
+		}
+	}
+
+	@shopping_websocket {
+		path /api/v1/shopping/ws /api/v1/shopping/ws/*
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	handle @shopping_websocket {
+		reverse_proxy api:3000
+	}
+
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	handle /health* {
+		reverse_proxy api:3000
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}
