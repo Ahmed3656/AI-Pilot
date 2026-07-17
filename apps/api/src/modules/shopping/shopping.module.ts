@@ -4,7 +4,9 @@ import { Repository } from 'typeorm';
 import { AuthModule } from '../auth/auth.module';
 import {
   CouponAttempt,
+  ControlLease,
   EvidenceArtifact,
+  IdempotencyRecord,
   MerchantAttempt,
   NormalizedOffer,
   RunApproval,
@@ -24,6 +26,8 @@ import {
   ShoppingAiClientService,
   ShoppingEventStreamService,
   ViewerTokenService,
+  IdempotencyService,
+  ShoppingReportService,
 } from './services';
 import { ShoppingController } from './shopping.controller';
 import { ShoppingService } from './shopping.service';
@@ -36,6 +40,8 @@ const entities = [
   RunApproval,
   RunEvent,
   EvidenceArtifact,
+  ControlLease,
+  IdempotencyRecord,
 ];
 const databaseEnabled = process.env.DATABASE_ENABLED === 'true';
 
@@ -50,6 +56,8 @@ const storeProvider: Provider = databaseEnabled
         approvals: Repository<RunApproval>,
         events: Repository<RunEvent>,
         evidence: Repository<EvidenceArtifact>,
+        leases: Repository<ControlLease>,
+        idempotency: Repository<IdempotencyRecord>,
       ) =>
         new TypeormShoppingStore(
           runs,
@@ -59,6 +67,8 @@ const storeProvider: Provider = databaseEnabled
           approvals,
           events,
           evidence,
+          leases,
+          idempotency,
         ),
       inject: entities.map((entity) => getRepositoryToken(entity)),
     }
@@ -79,6 +89,8 @@ const storeProvider: Provider = databaseEnabled
     ViewerTokenService,
     ShoppingEventStreamService,
     InternalTokenGuard,
+    IdempotencyService,
+    ShoppingReportService,
   ],
   exports: [ShoppingService, SHOPPING_STORE, AddressSecretVaultService],
 })

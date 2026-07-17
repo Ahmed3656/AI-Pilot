@@ -1,5 +1,7 @@
 export * from './coupon-attempt.entity';
+export * from './control-lease.entity';
 export * from './evidence-artifact.entity';
+export * from './idempotency-record.entity';
 export * from './merchant-attempt.entity';
 export * from './normalized-offer.entity';
 export * from './run-approval.entity';

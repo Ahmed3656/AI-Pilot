@@ -1,89 +1,74 @@
-import { ConflictException, Injectable } from '@nestjs/common';
-import { ShoppingRunState, TERMINAL_RUN_STATES } from '../shopping.types';
+import { Injectable } from '@nestjs/common';
+import { ContractException } from '../../../core/filters/contract-exception';
+import { ShoppingRunState } from '../shopping.types';
 
+const S = ShoppingRunState;
 const TRANSITIONS: Readonly<
   Record<ShoppingRunState, readonly ShoppingRunState[]>
 > = {
-  [ShoppingRunState.Clarifying]: [
-    ShoppingRunState.Discovering,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
+  [S.Clarifying]: [S.Discovering, S.Paused, S.Cancelled, S.Failed],
+  [S.Discovering]: [
+    S.Clarifying,
+    S.AwaitingDomainApproval,
+    S.Paused,
+    S.Cancelled,
+    S.Failed,
   ],
-  [ShoppingRunState.Discovering]: [
-    ShoppingRunState.Clarifying,
-    ShoppingRunState.AwaitingDomainApproval,
-    ShoppingRunState.Comparing,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
+  [S.AwaitingDomainApproval]: [
+    S.Discovering,
+    S.Comparing,
+    S.Paused,
+    S.Cancelled,
+    S.Failed,
   ],
-  [ShoppingRunState.AwaitingDomainApproval]: [
-    ShoppingRunState.Discovering,
-    ShoppingRunState.Comparing,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
+  [S.Comparing]: [
+    S.AwaitingDomainApproval,
+    S.AwaitingAddressConsent,
+    S.AwaitingSeatHoldApproval,
+    S.CouponTesting,
+    S.ReadyForHandoff,
+    S.Paused,
+    S.Cancelled,
+    S.Failed,
   ],
-  [ShoppingRunState.Comparing]: [
-    ShoppingRunState.AwaitingDomainApproval,
-    ShoppingRunState.AwaitingAddressConsent,
-    ShoppingRunState.AwaitingSeatHoldApproval,
-    ShoppingRunState.CouponTesting,
-    ShoppingRunState.ReadyForHandoff,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
+  [S.AwaitingAddressConsent]: [S.Comparing, S.Paused, S.Cancelled, S.Failed],
+  [S.AwaitingSeatHoldApproval]: [S.Comparing, S.Paused, S.Cancelled, S.Failed],
+  [S.CouponTesting]: [
+    S.Comparing,
+    S.ReadyForHandoff,
+    S.Paused,
+    S.Cancelled,
+    S.Failed,
   ],
-  [ShoppingRunState.AwaitingAddressConsent]: [
-    ShoppingRunState.Comparing,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
+  [S.ReadyForHandoff]: [
+    S.UserTakeover,
+    S.Paused,
+    S.Completed,
+    S.Cancelled,
+    S.Failed,
   ],
-  [ShoppingRunState.AwaitingSeatHoldApproval]: [
-    ShoppingRunState.Comparing,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
-  ],
-  [ShoppingRunState.CouponTesting]: [
-    ShoppingRunState.Comparing,
-    ShoppingRunState.ReadyForHandoff,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
-  ],
-  [ShoppingRunState.ReadyForHandoff]: [
-    ShoppingRunState.UserTakeover,
-    ShoppingRunState.Completed,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
-  ],
-  [ShoppingRunState.UserTakeover]: [
-    ShoppingRunState.ReadyForHandoff,
-    ShoppingRunState.Completed,
-    ShoppingRunState.Paused,
-    ShoppingRunState.Failed,
-    ShoppingRunState.Cancelled,
-  ],
-  [ShoppingRunState.Paused]: Object.values(ShoppingRunState).filter(
-    (state) =>
-      state !== ShoppingRunState.Paused && !TERMINAL_RUN_STATES.has(state),
-  ),
-  [ShoppingRunState.Completed]: [],
-  [ShoppingRunState.Failed]: [],
-  [ShoppingRunState.Cancelled]: [],
+  [S.UserTakeover]: [S.ReadyForHandoff, S.Completed, S.Cancelled, S.Failed],
+  [S.Paused]: [],
+  [S.Completed]: [],
+  [S.Cancelled]: [],
+  [S.Failed]: [],
 };
 
 @Injectable()
 export class RunStateMachine {
-  assertTransition(from: ShoppingRunState, to: ShoppingRunState): void {
+  assertTransition(
+    from: ShoppingRunState,
+    to: ShoppingRunState,
+    resumeStatus?: ShoppingRunState | null,
+  ): void {
     if (from === to) return;
-    if (!TRANSITIONS[from].includes(to)) {
-      throw new ConflictException(
-        `Invalid shopping run state transition: ${from} -> ${to}`,
+    const allowed =
+      from === S.Paused ? resumeStatus === to : TRANSITIONS[from].includes(to);
+    if (!allowed) {
+      throw new ContractException(
+        'INVALID_RUN_TRANSITION',
+        409,
+        `Invalid run transition from ${from} to ${to}`,
       );
     }
   }

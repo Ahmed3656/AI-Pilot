@@ -22,6 +22,7 @@
     "migration:generate": "typeorm-ts-node-commonjs -d src/database/data-source.ts migration:generate",
     "migration:show": "typeorm-ts-node-commonjs -d src/database/data-source.ts migration:show",
     "migration:run": "typeorm-ts-node-commonjs -d src/database/data-source.ts migration:run",
+    "migration:test": "npm run migration:run && npm run migration:show",
     "migration:revert": "typeorm-ts-node-commonjs -d src/database/data-source.ts migration:revert"
   },
   "dependencies": {

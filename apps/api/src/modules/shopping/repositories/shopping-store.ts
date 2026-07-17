@@ -1,7 +1,9 @@
 import { DeepPartial } from 'typeorm';
 import {
+  ControlLease,
   CouponAttempt,
   EvidenceArtifact,
+  IdempotencyRecord,
   MerchantAttempt,
   NormalizedOffer,
   RunApproval,
@@ -20,6 +22,11 @@ export interface ShoppingRunReportData {
   evidence: EvidenceArtifact[];
 }
 
+export interface AppendEventResult {
+  event: RunEvent;
+  duplicate: boolean;
+}
+
 export interface ShoppingStore {
   createRun(data: DeepPartial<ShoppingRun>): Promise<ShoppingRun>;
   saveRun(run: ShoppingRun): Promise<ShoppingRun>;
@@ -28,9 +35,26 @@ export interface ShoppingStore {
     data: DeepPartial<MerchantAttempt>,
   ): Promise<MerchantAttempt>;
   saveOffer(data: DeepPartial<NormalizedOffer>): Promise<NormalizedOffer>;
+  findOffer(id: string): Promise<NormalizedOffer | null>;
   saveCouponAttempt(data: DeepPartial<CouponAttempt>): Promise<CouponAttempt>;
   saveApproval(data: DeepPartial<RunApproval>): Promise<RunApproval>;
-  appendEvent(data: DeepPartial<RunEvent>): Promise<RunEvent | null>;
+  saveRunAndApproval(run: ShoppingRun, approval: RunApproval): Promise<void>;
+  appendEvent(data: DeepPartial<RunEvent>): Promise<AppendEventResult>;
+  eventsAfter(
+    runId: string,
+    after: string | undefined,
+    limit: number,
+  ): Promise<{ events: RunEvent[]; hasMore: boolean }>;
   saveEvidence(data: DeepPartial<EvidenceArtifact>): Promise<EvidenceArtifact>;
+  saveLease(data: DeepPartial<ControlLease>): Promise<ControlLease>;
+  saveRunAndLease(run: ShoppingRun, lease: ControlLease): Promise<void>;
+  findLease(id: string): Promise<ControlLease | null>;
+  findActiveLease(runId: string): Promise<ControlLease | null>;
+  findIdempotency(
+    scope: Pick<IdempotencyRecord, 'principalId' | 'method' | 'path' | 'key'>,
+  ): Promise<IdempotencyRecord | null>;
+  saveIdempotency(
+    data: DeepPartial<IdempotencyRecord>,
+  ): Promise<IdempotencyRecord>;
   report(runId: string): Promise<ShoppingRunReportData>;
 }
