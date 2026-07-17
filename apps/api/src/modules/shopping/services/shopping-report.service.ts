@@ -137,7 +137,8 @@ export class ShoppingReportService {
         })),
       partialFailures: data.merchantAttempts
         .filter(
-          (item) => item.finishedAt !== null && item.outcome !== 'succeeded',
+          (item) =>
+            item.outcome !== 'succeeded' && item.outcome !== 'in_progress',
         )
         .map((item) => ({
           merchantAttemptId: item.id,

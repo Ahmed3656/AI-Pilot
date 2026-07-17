@@ -226,8 +226,34 @@ def test_payment_details_page_pauses_before_model_screenshot() -> None:
     assert pause.value.reason_code is PauseReason.BROWSER_WARNING
 
 
+def test_product_link_card_promotion_is_not_treated_as_a_card_field() -> None:
+    assert_not_card_field(
+        {
+            "tag": "a",
+            "text": "Samsung Galaxy A55 - pay in installments with a credit card",
+            "href": "https://www.amazon.eg/dp/example",
+        }
+    )
+
+
 def test_accepted_card_footer_does_not_look_like_a_payment_form() -> None:
     inspect_page_for_pause(
         "Secure shopping. We accept credit card, debit card, and cash on delivery.",
         "https://www.jumia.com.eg/",
     )
+
+
+def test_homepage_script_with_card_field_copy_does_not_look_like_checkout() -> None:
+    inspect_page_for_pause(
+        '<script>window.messages = {"card number": "Card number is invalid"}</script>',
+        "https://www.amazon.eg/",
+    )
+
+
+def test_checkout_path_with_payment_copy_still_pauses() -> None:
+    with pytest.raises(PauseRequired) as pause:
+        inspect_page_for_pause(
+            "Enter your card number to continue.",
+            "https://www.amazon.eg/checkout/payment",
+        )
+    assert pause.value.reason_code is PauseReason.BROWSER_WARNING

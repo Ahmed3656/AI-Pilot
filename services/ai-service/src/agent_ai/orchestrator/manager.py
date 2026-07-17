@@ -622,6 +622,15 @@ class RunManager:
                 )
                 await self._transition(record, RunStatus.READY_FOR_HANDOFF)
             else:
+                try:
+                    await self._complete_attempts(record, failure_code="AI_RUN_FAILED")
+                except Exception as attempt_exc:
+                    logger.error(
+                        "AI run attempt finalization failed run_id=%s error_type=%s error=%s",
+                        record.run_id,
+                        type(attempt_exc).__name__,
+                        self._redact_error(record, attempt_exc),
+                    )
                 await self._fail(record, "AI_RUN_FAILED", retryable=True)
 
     async def _request_domains(self, record: RunRecord) -> None:

@@ -194,11 +194,13 @@ def assert_not_final_action(metadata: dict[str, Any]) -> None:
 
 
 def assert_not_card_field(metadata: dict[str, Any]) -> None:
-    text = _metadata_text(metadata)
-    if any(marker in text for marker in _CARD_MARKERS):
-        raise SafetyViolation("Card or wallet fields must never be entered or inspected")
     autocomplete = str(metadata.get("autocomplete", "")).casefold()
     if autocomplete.startswith("cc-"):
+        raise SafetyViolation("Card or wallet fields must never be entered or inspected")
+    if str(metadata.get("tag", "")).casefold() not in {"input", "select", "textarea"}:
+        return
+    text = _metadata_text(metadata)
+    if any(marker in text for marker in _CARD_MARKERS):
         raise SafetyViolation("Card or wallet fields must never be entered or inspected")
 
 
@@ -254,6 +256,7 @@ def is_seat_hold_element(metadata: dict[str, Any]) -> bool:
 
 def inspect_page_for_pause(page_text: str, current_url: str) -> None:
     folded = " ".join(page_text.casefold().split())
+    path = urlsplit(current_url).path.casefold()
     if current_url.startswith(("chrome-error://", "chrome://interstitial", "about:certerror")):
         raise PauseRequired(PauseReason.BROWSER_WARNING, "Browser security warning detected")
     if any(marker in folded for marker in _CAPTCHA_MARKERS):
@@ -265,14 +268,24 @@ def inspect_page_for_pause(page_text: str, current_url: str) -> None:
         )
     if any(marker in folded for marker in _OTP_MARKERS):
         raise PauseRequired(PauseReason.ONE_TIME_CODE, "One-time code is required")
-    if any(marker in folded for marker in _SENSITIVE_CARD_PAGE_MARKERS) or re.search(
-        r"autocomplete\s*=\s*['\"]cc-", folded
+    payment_path = bool(re.search(r"/(?:checkout|payment|pay|billing)(?:/|$)", path))
+    sensitive_control = bool(
+        re.search(r"autocomplete\s*=\s*['\"]cc-", folded)
+        or any(
+            re.search(
+                rf"<(?:input|textarea|select)\b[^>]*{re.escape(marker)}",
+                folded,
+            )
+            for marker in _SENSITIVE_CARD_PAGE_MARKERS
+        )
+    )
+    if sensitive_control or (
+        payment_path and any(marker in folded for marker in _SENSITIVE_CARD_PAGE_MARKERS)
     ):
         raise PauseRequired(
             PauseReason.BROWSER_WARNING,
             "Payment details page detected; AI stopped before inspecting payment data",
         )
-    path = urlsplit(current_url).path.casefold()
     login_path = bool(re.search(r"/(?:login|signin|sign-in|auth)(?:/|$)", path))
     password_form = bool(re.search(r"type\s*=\s*['\"]password['\"]", folded))
     if login_path or password_form:

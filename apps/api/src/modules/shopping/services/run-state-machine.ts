@@ -48,7 +48,7 @@ const TRANSITIONS: Readonly<
     S.Failed,
   ],
   [S.UserTakeover]: [S.ReadyForHandoff, S.Completed, S.Cancelled, S.Failed],
-  [S.Paused]: [],
+  [S.Paused]: [S.Cancelled, S.Failed],
   [S.Completed]: [],
   [S.Cancelled]: [],
   [S.Failed]: [],
@@ -63,9 +63,9 @@ export class RunStateMachine {
   ): void {
     if (from === to) return;
     const allowed =
-      (from === S.Paused && (to === S.UserTakeover || resumeStatus === to)) ||
-      (from === S.UserTakeover && resumeStatus === to) ||
-      TRANSITIONS[from].includes(to);
+      from === S.Paused
+        ? resumeStatus === to || TRANSITIONS[from].includes(to)
+        : TRANSITIONS[from].includes(to);
     if (!allowed) {
       throw new ContractException(
         'INVALID_RUN_TRANSITION',

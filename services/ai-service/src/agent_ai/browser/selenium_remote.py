@@ -26,7 +26,7 @@ from agent_ai.browser.safety import (
     is_address_field,
     is_seat_hold_element,
 )
-from agent_ai.models import ApprovalType, Category, RunStatus
+from agent_ai.models import ApprovalType, Category, PauseReason, RunStatus
 
 _SECRET_PATTERN = re.compile(r"\{\{secret:([a-zA-Z0-9]+)}}")
 
@@ -572,14 +572,30 @@ class BrowserActionExecutor:
                     "Safety pause occurred before a safe screenshot was captured"
                 ) from exc
             return self._last_screenshot
+        except SafetyViolation as exc:
+            pause = PauseRequired(PauseReason.BROWSER_WARNING, str(exc))
+            await self._pause_safely(pause)
+            if self._last_screenshot is None:
+                raise SafetyViolation(
+                    "Safety pause occurred before a safe screenshot was captured"
+                ) from exc
+            return self._last_screenshot
         return await self.capture(action=kind)
 
     async def capture(self, *, action: str = "observe") -> str:
         await self.wait_until_active()
-        async with self.action_lock:
-            await self.wait_until_active()
-            await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
-            png = await asyncio.to_thread(self.browser.masked_screenshot, self.redactor.values)
+        try:
+            async with self.action_lock:
+                await self.wait_until_active()
+                await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
+                png = await asyncio.to_thread(self.browser.masked_screenshot, self.redactor.values)
+        except PauseRequired as exc:
+            await self._pause_safely(exc)
+            if self._last_screenshot is None:
+                raise SafetyViolation(
+                    "Safety pause occurred before a safe screenshot was captured"
+                ) from exc
+            return self._last_screenshot
         screenshot = base64.b64encode(png).decode("ascii")
         evidence_id = f"evidence:{uuid4()}"
         self.evidence_ids.append(evidence_id)

@@ -161,6 +161,11 @@ class PartialThenFailAgent(FakeAgent):
         raise RuntimeError("later merchant failed")
 
 
+class FailAgent(FakeAgent):
+    async def run(self, **_: Any) -> str:
+        raise RuntimeError("provider failed before producing results")
+
+
 def _request(run_id: str = "run-1", query: str = "Find an exact phone") -> Any:
     return InternalCreateRunRequest.model_validate(
         {
@@ -551,6 +556,53 @@ async def test_safety_pause_transitions_before_warning_without_failing_run() -> 
     assert record.error is None
     paused.cancel()
     await asyncio.gather(paused, return_exceptions=True)
+    await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_run_finalizes_started_merchant_attempts() -> None:
+    control = FakeControl()
+    manager = RunManager(
+        Settings(internal_token="token", openrouter_api_key="fake"),
+        control,  # type: ignore[arg-type]
+        agent_factory=FailAgent,
+        browser_factory=FakeBrowser,  # type: ignore[arg-type]
+    )
+    await manager.create_run(_request(), "run-1")
+    await manager.start("run-1")
+    await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
+    record = manager.get_record("run-1")
+    await manager.command(
+        "run-1",
+        _command(
+            "approve-1",
+            "run-1",
+            "approve_domains",
+            {
+                "approvalId": "approval-1",
+                "requestId": record.domain_request_id,
+                "domains": ["amazon.eg"],
+            },
+        ),
+        "approve-1",
+    )
+    await _wait_for_status(manager, "run-1", RunStatus.FAILED)
+
+    event_types = [event_type for _, event_type, _, _ in control.events]
+    assert event_types.index("merchant.attempt_completed") < event_types.index("run.failed")
+    completed = [
+        payload
+        for _, event_type, payload, _ in control.events
+        if event_type == "merchant.attempt_completed"
+    ]
+    assert completed == [
+        {
+            "attemptId": next(iter(record.attempts.values())).id,
+            "outcome": "failed",
+            "failureCode": "AI_RUN_FAILED",
+            "evidenceIds": [],
+        }
+    ]
     await manager.aclose()
 
 

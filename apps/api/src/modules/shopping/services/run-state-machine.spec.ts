@@ -22,6 +22,15 @@ describe('RunStateMachine', () => {
     ).toThrow('Invalid run transition');
   });
 
+  it.each([S.Cancelled, S.Failed])(
+    'allows paused runs to enter terminal state %s',
+    (terminal) => {
+      expect(() =>
+        machine.assertTransition(S.Paused, terminal, S.Comparing),
+      ).not.toThrow();
+    },
+  );
+
   it.each([S.Completed, S.Cancelled, S.Failed])(
     'keeps terminal state %s immutable',
     (terminal) => {

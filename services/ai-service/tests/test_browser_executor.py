@@ -7,13 +7,13 @@ from typing import Any
 
 import pytest
 
-from agent_ai.browser.safety import SafetyViolation
+from agent_ai.browser.safety import PauseRequired, SafetyViolation
 from agent_ai.browser.selenium_remote import (
     BrowserActionExecutor,
     SecretRedactor,
     SeleniumRemoteBrowser,
 )
-from agent_ai.models import ApprovalType, Category, RunStatus
+from agent_ai.models import ApprovalType, Category, PauseReason, RunStatus
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -147,6 +147,48 @@ async def test_secret_is_rejected_outside_address_field() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capture_pauses_and_returns_last_safe_screenshot() -> None:
+    class PausingBrowser(FakeBrowser):
+        def __init__(self) -> None:
+            super().__init__({"name": "search", "aria_label": "Search"})
+            self.should_pause = False
+
+        def guard(self, category: Category, approved_domains: set[str]) -> None:
+            super().guard(category, approved_domains)
+            if self.should_pause:
+                raise PauseRequired(
+                    PauseReason.BROWSER_WARNING,
+                    "Payment details page detected; AI stopped before inspecting payment data",
+                )
+
+        def recover_last_safe(self, category: Category, approved_domains: set[str]) -> None:
+            self.should_pause = False
+            super().recover_last_safe(category, approved_domains)
+
+    browser = PausingBrowser()
+    pauses: list[PauseRequired] = []
+
+    async def pause(exc: PauseRequired) -> None:
+        pauses.append(exc)
+
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+        pause_requester=pause,
+    )
+    safe_screenshot = await executor.capture()
+    browser.should_pause = True
+
+    assert await executor.capture() == safe_screenshot
+    assert [exc.reason_code for exc in pauses] == [PauseReason.BROWSER_WARNING]
+
+
+@pytest.mark.asyncio
 async def test_payment_click_is_blocked_before_selenium_action() -> None:
     browser = FakeBrowser({"tag": "button", "text": "Place order"})
     executor = BrowserActionExecutor(
@@ -161,6 +203,32 @@ async def test_payment_click_is_blocked_before_selenium_action() -> None:
     with pytest.raises(SafetyViolation, match="final"):
         await executor.execute({"type": "click", "x": 10, "y": 20})
     assert browser.clicks == []
+
+
+@pytest.mark.asyncio
+async def test_blocked_action_pauses_and_keeps_last_safe_screenshot() -> None:
+    browser = FakeBrowser({"tag": "a", "text": "Samsung Galaxy A55"})
+    pauses: list[PauseRequired] = []
+
+    async def pause(exc: PauseRequired) -> None:
+        pauses.append(exc)
+
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+        pause_requester=pause,
+    )
+    safe_screenshot = await executor.capture()
+    browser.metadata = {"tag": "button", "text": "Buy now"}
+
+    assert await executor.execute({"type": "click", "x": 10, "y": 20}) == safe_screenshot
+    assert browser.clicks == []
+    assert [exc.reason_code for exc in pauses] == [PauseReason.BROWSER_WARNING]
 
 
 @pytest.mark.asyncio
