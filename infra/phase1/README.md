@@ -53,7 +53,7 @@ The health and smoke scripts also send rejected and accepted internal-auth probe
 
 ## Exposure and networks
 
-Only Caddy publishes a host port, bound to `127.0.0.1:${DEALPILOT_GATEWAY_PORT:-8080}`. PostgreSQL, the API, FastAPI, WebDriver, and direct noVNC have no host bindings.
+Only Caddy publishes a host port, bound to `${DEALPILOT_GATEWAY_BIND:-127.0.0.1}:${DEALPILOT_GATEWAY_PORT:-8080}`. PostgreSQL, the API, FastAPI, WebDriver, and direct noVNC have no host bindings. Set the bind to `0.0.0.0` only for a physical phone on a trusted private LAN, and use the computer's LAN address for both public and Expo origins.
 
 | Network                    | Members                        | Purpose                                       |
 | -------------------------- | ------------------------------ | --------------------------------------------- |

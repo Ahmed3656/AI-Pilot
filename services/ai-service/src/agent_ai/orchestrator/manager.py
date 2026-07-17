@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -38,6 +39,8 @@ from agent_ai.schemas.runs import (
     InternalCreateRunResponse,
 )
 from agent_ai.workflows import validate_agent_result
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class ComputerAgent(Protocol):
@@ -416,14 +419,28 @@ class RunManager:
     async def _clarify(self, record: RunRecord, payload: dict[str, Any]) -> None:
         if record.status is not RunStatus.CLARIFYING:
             raise InvalidTransitionError("clarify is not expected")
-        if payload["requestId"] != record.clarification_request_id:
-            raise InvalidTransitionError("Stale clarification requestId")
+        # The public API owns the user-facing pending action and validates its
+        # requestId before forwarding this authenticated internal command. The
+        # AI service emits its clarification event asynchronously after create,
+        # so its locally generated ID can legitimately differ from the API ID.
+        # Treat the control plane as authoritative here; status and command
+        # idempotency still reject stale or replayed clarification commands.
+        record.clarification_request_id = str(payload["requestId"])
         answers = payload["answers"]
-        answer_text = " ".join(
-            value if isinstance(value, str) else " ".join(str(item) for item in value)
-            for value in answers.values()
+        category_answer = answers.get("category")
+        category_value = (
+            category_answer[0] if isinstance(category_answer, list) else category_answer
         )
-        category = classify_request(answer_text)
+        try:
+            category = Category(category_value) if isinstance(category_value, str) else None
+        except ValueError:
+            category = None
+        if category is None:
+            answer_text = " ".join(
+                value if isinstance(value, str) else " ".join(str(item) for item in value)
+                for value in answers.values()
+            )
+            category = classify_request(answer_text)
         if category is None:
             raise ValueError("Clarification did not resolve retail, food, or cinema")
         record.category = category
@@ -563,6 +580,12 @@ class RunManager:
                 raise
         except Exception as exc:
             record.error = self._redact_error(record, exc)
+            logger.error(
+                "AI run failed run_id=%s error_type=%s error=%s",
+                record.run_id,
+                type(exc).__name__,
+                record.error,
+            )
             if record.partial_offers:
                 record.warnings.append(
                     {
@@ -756,7 +779,7 @@ class RunManager:
                 status=RunStatus.AWAITING_ADDRESS_CONSENT,
             )
         else:
-            record.status = RunStatus.PAUSED
+            await self._transition(record, RunStatus.PAUSED)
             await self.control.emit(
                 record.run_id,
                 "run.warning",

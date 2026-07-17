@@ -57,7 +57,7 @@ EXPO_PUBLIC_API_URL=http://localhost:8080 EXPO_PUBLIC_AUTH_REQUIRED=true npm run
 
 The root command starts Expo only. It does not start a second API or AI process.
 
-For Expo Web, press `w`. For a simulator on the same machine, use its host-loopback mapping if `localhost` is not forwarded. A physical phone cannot reach a gateway bound to host loopback; use the HTTPS tunnel profile described below and set `EXPO_PUBLIC_API_URL` to that HTTPS origin.
+For Expo Web, press `w`. For an Android emulator, run `adb reverse tcp:8080 tcp:8080` before starting Expo; iOS Simulator can use host loopback directly. For a physical phone, either use the HTTPS tunnel profile below or, on a trusted private LAN, set `DEALPILOT_GATEWAY_BIND=0.0.0.0` and set `DEALPILOT_PUBLIC_ORIGIN` plus `EXPO_PUBLIC_API_URL` to `http://<computer-lan-ip>:8080`. Apply the same Expo URL in `apps/mobile/.env`, restart Docker, and restart Expo with a cleared cache.
 
 Sign in with the credentials printed by `npm run demo`. The seeded report run ID is also written to ignored `infra/phase1/.demo-state.json`. The completed seed leaves the single browser slot free, so the mobile app can create a fresh run and exercise approval, comparison, WebSocket updates, handoff, and report screens.
 

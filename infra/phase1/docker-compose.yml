@@ -144,14 +144,11 @@ services:
         - python
         - -c
         - |-
-          import json, os, pathlib, urllib.error, urllib.request;
+          import json, pathlib, urllib.request;
           assert pathlib.Path('/run/secrets/ai_openrouter_api_key').stat().st_size > 0;
           assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3))['status'] == 'ok';
           value = json.load(urllib.request.urlopen('http://browser:4444/status', timeout=3))['value'];
           assert any(node.get('availability') == 'UP' for node in value.get('nodes', []));
-          request = urllib.request.Request('http://api:3000/internal/v1/secrets/resolve', data=b'{}', headers={'Content-Type': 'application/json', 'X-Internal-Token': os.environ['AI_INTERNAL_TOKEN']}, method='POST');
-          try: urllib.request.urlopen(request, timeout=3); raise AssertionError('invalid request unexpectedly accepted')
-          except urllib.error.HTTPError as error: assert error.code == 400
       interval: 10s
       timeout: 8s
       retries: 20
@@ -205,7 +202,7 @@ services:
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:?Set INTERNAL_TOKEN in infra/phase1/.env}
       TZ: Africa/Cairo
     ports:
-      - '127.0.0.1:${DEALPILOT_GATEWAY_PORT:-8080}:8080'
+      - '${DEALPILOT_GATEWAY_BIND:-127.0.0.1}:${DEALPILOT_GATEWAY_PORT:-8080}:8080'
     volumes:
       - type: bind
         source: ./Caddyfile

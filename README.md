@@ -45,7 +45,7 @@ npm run mvp:start
 npm run mvp:smoke
 ```
 
-Only `http://localhost:8080` is published. The lifecycle command creates `infra/phase1/.env` with independent random local secrets; Git ignores this file. Compose mounts the OpenRouter key from that file as a secret granted only to the AI container. The live adapter uses OpenRouter's stateless Responses API through the OpenAI-compatible Python client and sends full conversation/tool history on each turn.
+By default only `http://localhost:8080` is published. For a physical phone on a trusted LAN, set `DEALPILOT_GATEWAY_BIND=0.0.0.0`, set both public/mobile origins to the computer's LAN address, and restart the stack. The lifecycle command creates `infra/phase1/.env` with independent random local secrets; Git ignores this file. Compose mounts the OpenRouter key from that file as a secret granted only to the AI container. The live adapter uses OpenRouter's stateless Responses API through the OpenAI-compatible Python client and sends full conversation/tool history on each turn.
 
 ## Verification and lifecycle
 

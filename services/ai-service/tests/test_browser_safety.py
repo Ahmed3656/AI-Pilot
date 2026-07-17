@@ -224,3 +224,10 @@ def test_payment_details_page_pauses_before_model_screenshot() -> None:
             "https://www.amazon.eg/checkout",
         )
     assert pause.value.reason_code is PauseReason.BROWSER_WARNING
+
+
+def test_accepted_card_footer_does_not_look_like_a_payment_form() -> None:
+    inspect_page_for_pause(
+        "Secure shopping. We accept credit card, debit card, and cash on delivery.",
+        "https://www.jumia.com.eg/",
+    )

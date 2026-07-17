@@ -8,8 +8,9 @@ from typing import Any
 
 import pytest
 
+from agent_ai.browser import PauseRequired
 from agent_ai.config.settings import Settings
-from agent_ai.models import Category, RequestedCategory, RunStatus
+from agent_ai.models import Category, PauseReason, RequestedCategory, RunStatus
 from agent_ai.orchestrator.manager import (
     IdempotencyConflictError,
     RunBusyError,
@@ -403,6 +404,74 @@ async def test_failed_clarification_event_can_be_retried_idempotently() -> None:
     assert manager.get_record("run-1").clarification_request_id is None
     await manager.start("run-1")
     assert manager.get_record("run-1").clarification_request_id is not None
+    await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_clarification_accepts_authoritative_control_plane_request_id() -> None:
+    request = _request(query="Help me compare something")
+    request.requested_category = RequestedCategory.AUTO
+    manager = RunManager(
+        Settings(internal_token="token", openrouter_api_key="fake"),
+        FakeControl(),  # type: ignore[arg-type]
+        agent_factory=FakeAgent,
+        browser_factory=FakeBrowser,  # type: ignore[arg-type]
+    )
+    await manager.create_run(request, "run-1")
+    await manager.start("run-1")
+    ai_request_id = manager.get_record("run-1").clarification_request_id
+    assert ai_request_id is not None
+
+    await manager.command(
+        "run-1",
+        _command(
+            "clarify-1",
+            "run-1",
+            "clarify",
+            {
+                "requestId": "api-owned-request-id",
+                "answers": {"category": "retail"},
+            },
+        ),
+        "clarify-1",
+    )
+
+    record = manager.get_record("run-1")
+    assert record.category is Category.RETAIL
+    await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
+    await manager.aclose()
+
+
+@pytest.mark.asyncio
+async def test_safety_pause_transitions_before_warning_without_failing_run() -> None:
+    control = FakeControl()
+    manager = RunManager(
+        Settings(internal_token="token", openrouter_api_key="fake"),
+        control,  # type: ignore[arg-type]
+        agent_factory=FakeAgent,
+        browser_factory=FakeBrowser,  # type: ignore[arg-type]
+    )
+    await manager.create_run(_request(), "run-1")
+    record = manager.get_record("run-1")
+    record.status = RunStatus.COMPARING
+    paused = asyncio.create_task(
+        manager._pause_for_safety(  # noqa: SLF001 - focused event ordering regression
+            record,
+            PauseRequired(PauseReason.CAPTCHA, "CAPTCHA/human verification detected"),
+        )
+    )
+    while len(control.events) < 2:
+        await asyncio.sleep(0)
+
+    assert [event_type for _, event_type, _, _ in control.events] == [
+        "run.status_changed",
+        "run.warning",
+    ]
+    assert all(status is RunStatus.PAUSED for *_, status in control.events)
+    assert record.status is RunStatus.PAUSED
+    assert record.error is None
+    paused.cancel()
+    await asyncio.gather(paused, return_exceptions=True)
     await manager.aclose()
 
 

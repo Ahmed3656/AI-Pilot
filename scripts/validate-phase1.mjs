@@ -54,7 +54,10 @@ assert.match(compose, /SE_SCREEN_WIDTH: ['"]1280['"]/);
 assert.match(compose, /SE_SCREEN_HEIGHT: ['"]800['"]/);
 assert.match(compose, /availability['"]\) == ['"]UP['"]/);
 assert.doesNotMatch(compose, /\['value'\]\['ready'\] is True/);
-assert.match(compose, /127\.0\.0\.1:\$\{DEALPILOT_GATEWAY_PORT/);
+assert.match(
+  compose,
+  /\$\{DEALPILOT_GATEWAY_BIND:-127\.0\.0\.1\}:\$\{DEALPILOT_GATEWAY_PORT/,
+);
 assert.equal((compose.match(/^\s+ports:/gm) ?? []).length, 1);
 assert.equal((compose.match(/TZ: Africa\/Cairo/g) ?? []).length, 5);
 assert.match(compose, /control-plane:[\s\S]*internal: true/);
@@ -66,6 +69,7 @@ for (const required of [
   'AI_SERVICE_URL',
   'INTERNAL_TOKEN',
   'VIEWER_TOKEN_SECRET',
+  'DEALPILOT_GATEWAY_BIND',
   'DEALPILOT_PUBLIC_ORIGIN',
   'AI_OPENROUTER_API_KEY',
   'AI_SELENIUM_REMOTE_URL',

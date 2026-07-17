@@ -52,6 +52,19 @@ _CARD_MARKERS = (
     "رمز الأمان",
 )
 
+# Generic merchant pages commonly advertise accepted card types in headers or
+# footers. Page-wide inspection must only react to actual sensitive form
+# signals; element-level checks above remain intentionally broader.
+_SENSITIVE_CARD_PAGE_MARKERS = (
+    "card number",
+    "cvv",
+    "cvc",
+    "expiry date",
+    "expiration date",
+    "رقم البطاقة",
+    "رمز الأمان",
+)
+
 _SUSPICIOUS_MARKERS = (
     "ignore previous instructions",
     "ignore all instructions",
@@ -252,7 +265,7 @@ def inspect_page_for_pause(page_text: str, current_url: str) -> None:
         )
     if any(marker in folded for marker in _OTP_MARKERS):
         raise PauseRequired(PauseReason.ONE_TIME_CODE, "One-time code is required")
-    if any(marker in folded for marker in _CARD_MARKERS) or re.search(
+    if any(marker in folded for marker in _SENSITIVE_CARD_PAGE_MARKERS) or re.search(
         r"autocomplete\s*=\s*['\"]cc-", folded
     ):
         raise PauseRequired(

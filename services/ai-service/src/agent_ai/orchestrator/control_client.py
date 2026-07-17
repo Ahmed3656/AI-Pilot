@@ -88,7 +88,14 @@ class ControlAPIClient:
                 break
             await asyncio.sleep(0.05 * (2**attempt))
         assert response is not None
-        response.raise_for_status()
+        if response.is_error:
+            try:
+                error_code = str(response.json().get("error", {}).get("code", "unknown"))
+            except (TypeError, ValueError):
+                error_code = "unknown"
+            raise RuntimeError(
+                f"Control API rejected {event_type} with HTTP {response.status_code} ({error_code})"
+            )
         return identifier
 
     async def resolve_secret(
