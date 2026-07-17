@@ -22,7 +22,7 @@ export function LanguageToggle() {
         { borderColor: theme.colors.border },
       ]}
     >
-      {(['en', 'ar'] as const).map((item) => {
+      {(['en-EG', 'ar-EG'] as const).map((item) => {
         const selected = locale === item;
         return (
           <Pressable
@@ -41,7 +41,7 @@ export function LanguageToggle() {
                 fontWeight: '800',
               }}
             >
-              {t(item === 'en' ? 'english' : 'arabic')}
+              {t(item === 'en-EG' ? 'english' : 'arabic')}
             </Text>
           </Pressable>
         );

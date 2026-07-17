@@ -75,6 +75,7 @@ class CouponEngine:
                 after_total=after,
                 accepted=accepted,
                 message=message,
+                rejection_reason=None if accepted else _rejection_reason(message),
             )
             attempts.append(attempt)
             if accepted and (best is None or attempt.after_total < best.after_total):
@@ -88,3 +89,18 @@ class CouponEngine:
                 if not restored or restored_total != best.after_total:
                     raise RuntimeError("Could not restore the verified winning coupon/cart state")
         return attempts
+
+
+def _rejection_reason(message: str | None) -> str:
+    folded = " ".join((message or "").casefold().split())
+    markers = (
+        ("minimum", "minimum_not_met"),
+        ("invalid", "invalid_code"),
+        ("expired", "expired"),
+        ("not valid", "not_eligible"),
+        ("not eligible", "not_eligible"),
+        ("payment method", "payment_method_required"),
+        ("already applied", "already_applied"),
+        ("not stack", "not_stackable"),
+    )
+    return next((reason for marker, reason in markers if marker in folded), "unknown")

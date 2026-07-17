@@ -1,6 +1,6 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../../database/entities/base.entity';
-import { ApprovalType } from '../shopping.types';
+import { ApprovalStatus, ApprovalType } from '../shopping.types';
 import { ShoppingRun } from './shopping-run.entity';
 
 @Entity({ name: 'shopping_run_approvals' })
@@ -13,6 +13,9 @@ export class RunApproval extends BaseEntity {
   @JoinColumn({ name: 'run_id' })
   run!: ShoppingRun;
 
+  @Column({ name: 'request_id', type: 'varchar', length: 128 })
+  requestId!: string;
+
   @Column({
     type: 'enum',
     enum: ApprovalType,
@@ -23,13 +26,19 @@ export class RunApproval extends BaseEntity {
   @Column({
     name: 'recipient_domains',
     type: 'jsonb',
-    default: () => "'[]'",
+    default: () => "'[]'::jsonb",
   })
-  recipientDomains!: string[];
+  merchantDomains!: string[];
+
+  @Column({ name: 'offer_id', type: 'varchar', length: 128, nullable: true })
+  offerId!: string | null;
+
+  @Column({ type: 'varchar', length: 16, default: ApprovalStatus.Approved })
+  status!: ApprovalStatus;
 
   @Column({ name: 'approved_at', type: 'timestamptz' })
   approvedAt!: Date;
 
-  @Column({ type: 'jsonb', default: () => "'{}'" })
-  metadata!: Record<string, unknown>;
+  @Column({ name: 'expires_at', type: 'timestamptz', nullable: true })
+  expiresAt!: Date | null;
 }

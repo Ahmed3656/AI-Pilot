@@ -1,21 +1,10 @@
-import { Check, Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from '../../../database/entities/base.entity';
-import { ShoppingCategory } from '../shopping.types';
+import { PriceBreakdown, ShoppingCategory } from '../shopping.types';
 import { ShoppingRun } from './shopping-run.entity';
 
-const moneyColumn = {
-  type: 'numeric' as const,
-  precision: 12,
-  scale: 2,
-  transformer: {
-    to: (value: number | null) => value,
-    from: (value: string | null) => (value === null ? null : Number(value)),
-  },
-};
-
 @Entity({ name: 'shopping_normalized_offers' })
-@Index(['runId', 'finalTotal'])
-@Check('chk_shopping_normalized_offers_currency_egp', `"currency" = 'EGP'`)
+@Index(['runId', 'validity'])
 export class NormalizedOffer extends BaseEntity {
   @Column({ name: 'run_id', type: 'varchar', length: 26 })
   runId!: string;
@@ -24,14 +13,16 @@ export class NormalizedOffer extends BaseEntity {
   @JoinColumn({ name: 'run_id' })
   run!: ShoppingRun;
 
-  @Column({ type: 'varchar', length: 120 })
-  merchant!: string;
+  @Column({ name: 'merchant_attempt_id', type: 'varchar', length: 128 })
+  merchantAttemptId!: string;
 
-  @Column({
-    type: 'enum',
-    enum: ShoppingCategory,
-    enumName: 'shopping_offer_category_enum',
-  })
+  @Column({ name: 'merchant', type: 'varchar', length: 120 })
+  merchantName!: string;
+
+  @Column({ name: 'merchant_domain', type: 'varchar', length: 255 })
+  merchantDomain!: string;
+
+  @Column({ type: 'varchar', length: 16 })
   category!: ShoppingCategory;
 
   @Column({ type: 'text' })
@@ -40,45 +31,34 @@ export class NormalizedOffer extends BaseEntity {
   @Column({ name: 'source_url', type: 'text' })
   sourceUrl!: string;
 
-  @Column({ type: 'varchar', length: 3, default: 'EGP' })
-  currency = 'EGP' as const;
+  @Column({ type: 'jsonb' })
+  match!: { exact: boolean; confidence: number; explanation: string };
 
-  @Column({ ...moneyColumn, name: 'base_price' })
-  basePrice!: number;
+  @Column({ type: 'varchar', length: 16 })
+  availability!: 'available' | 'unavailable' | 'unknown';
 
-  @Column({ ...moneyColumn, name: 'delivery_fee', nullable: true })
-  deliveryFee!: number | null;
+  @Column({ type: 'jsonb' })
+  details!: Record<string, unknown>;
 
-  @Column({ ...moneyColumn, name: 'service_fee', nullable: true })
-  serviceFee!: number | null;
+  @Column({ type: 'jsonb' })
+  price!: PriceBreakdown;
 
-  @Column({ ...moneyColumn, name: 'tax', nullable: true })
-  tax!: number | null;
-
-  @Column({ ...moneyColumn, name: 'discount', nullable: true })
-  discount!: number | null;
-
-  @Column({ ...moneyColumn, name: 'final_total' })
-  finalTotal!: number;
-
-  @Column({ name: 'coupon_code', type: 'varchar', length: 80, nullable: true })
-  couponCode!: string | null;
-
-  @Column({ type: 'varchar', length: 80 })
-  availability!: string;
+  @Column({ type: 'varchar', length: 16 })
+  validity!: 'valid' | 'excluded' | 'incomplete';
 
   @Column({ name: 'observed_at', type: 'timestamptz' })
   observedAt!: Date;
 
-  @Column({ name: 'evidence_ids', type: 'jsonb', default: () => "'[]'" })
+  @Column({ name: 'evidence_ids', type: 'jsonb', default: () => "'[]'::jsonb" })
   evidenceIds!: string[];
 
-  @Column({ name: 'match_confidence', type: 'real' })
-  matchConfidence!: number;
+  @Column({ name: 'exclusion_reason', type: 'text', nullable: true })
+  exclusionReason!: string | null;
 
-  @Column({ name: 'incomplete_reason', type: 'text', nullable: true })
-  incompleteReason!: string | null;
-
-  @Column({ type: 'jsonb', default: () => "'{}'" })
-  details!: Record<string, unknown>;
+  @Column({
+    name: 'incomplete_fields',
+    type: 'jsonb',
+    default: () => "'[]'::jsonb",
+  })
+  incompleteFields!: string[];
 }

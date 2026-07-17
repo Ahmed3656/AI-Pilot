@@ -4,7 +4,7 @@ import { STORAGE_KEYS } from '@/constants/storage';
 import { storage } from '@/storage/storage';
 
 export const apiClient = create({
-  baseURL: environment.apiUrl,
+  baseURL: environment.apiBaseUrl,
   timeout: 10_000,
   headers: { Accept: 'application/json' },
 });

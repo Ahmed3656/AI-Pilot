@@ -95,7 +95,7 @@ export function AuthScreen({
           keyboardShouldPersistTaps="handled"
         >
           <View style={[styles.languageRow, rowDirection]}>
-            {(['en', 'ar'] as const).map((item) => (
+            {(['en-EG', 'ar-EG'] as const).map((item) => (
               <Pressable
                 accessibilityRole="button"
                 key={item}
@@ -115,7 +115,7 @@ export function AuthScreen({
                     fontWeight: '800',
                   }}
                 >
-                  {t(item === 'en' ? 'english' : 'arabic')}
+                  {t(item === 'en-EG' ? 'english' : 'arabic')}
                 </Text>
               </Pressable>
             ))}

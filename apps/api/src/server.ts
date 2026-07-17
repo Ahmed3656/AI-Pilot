@@ -14,10 +14,17 @@ export function configureServer(app: INestApplication): void {
   app.enableCors({ origin: true, credentials: true });
 
   const swaggerConfig = new DocumentBuilder()
-    .setTitle('AI Pilot API')
-    .setDescription('Foundational API contracts for the AI Pilot platform.')
-    .setVersion('0.1.0')
-    .addBearerAuth()
+    .setTitle('DealPilot Egypt MVP API')
+    .setDescription(
+      'Egypt-only shopping control API. Market EG, currency EGP, timezone Africa/Cairo.',
+    )
+    .setVersion('1.0.0')
+    .addBearerAuth(undefined, 'userBearer')
+    .addBearerAuth(undefined, 'viewerBearer')
+    .addApiKey(
+      { type: 'apiKey', in: 'header', name: 'X-Internal-Token' },
+      'internalToken',
+    )
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('docs', app, document);

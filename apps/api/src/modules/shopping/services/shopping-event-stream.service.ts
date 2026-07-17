@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   OnApplicationBootstrap,
   OnModuleDestroy,
@@ -8,12 +9,12 @@ import { createHash } from 'node:crypto';
 import { Server } from 'node:http';
 import { Socket } from 'node:net';
 import { RunEvent } from '../entities';
+import { SHOPPING_STORE, ShoppingStore } from '../repositories';
 import { ViewerTokenService } from './viewer-token.service';
 
 const EVENTS_PATH = /^\/api\/v1\/shopping\/runs\/([^/]+)\/events$/;
-const EVENTS_PROTOCOL = 'dealpilot.events.v1';
-const BEARER_PROTOCOL_PREFIX = 'bearer.';
 const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const PROTOCOL = 'dealpilot.events.v1';
 
 @Injectable()
 export class ShoppingEventStreamService
@@ -25,6 +26,7 @@ export class ShoppingEventStreamService
   constructor(
     private readonly adapterHost: HttpAdapterHost,
     private readonly viewerTokens: ViewerTokenService,
+    @Inject(SHOPPING_STORE) private readonly store: ShoppingStore,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -34,28 +36,15 @@ export class ShoppingEventStreamService
 
   onModuleDestroy(): void {
     this.server?.off('upgrade', this.handleUpgrade);
-    for (const sockets of this.clients.values()) {
+    for (const sockets of this.clients.values())
       for (const socket of sockets) socket.destroy();
-    }
     this.clients.clear();
   }
 
   publish(event: RunEvent): void {
-    const sockets = this.clients.get(event.runId);
-    if (!sockets?.size) return;
-    const frame = encodeFrame(
-      JSON.stringify({
-        id: event.id,
-        eventId: event.eventId,
-        runId: event.runId,
-        type: event.type,
-        payload: event.payload,
-        observedAt: event.observedAt,
-      }),
-    );
-    for (const socket of sockets) {
+    const frame = encodeFrame(JSON.stringify(eventEnvelope(event)));
+    for (const socket of this.clients.get(event.runId) ?? [])
       if (socket.writable) socket.write(frame);
-    }
   }
 
   private readonly handleUpgrade = async (
@@ -68,63 +57,66 @@ export class ShoppingEventStreamService
     const runId = decodeURIComponent(match[1]);
     const protocols = String(request.headers['sec-websocket-protocol'] ?? '')
       .split(',')
-      .map((protocol) => protocol.trim());
-    const tokenProtocol = protocols.find((protocol) =>
-      protocol.startsWith(BEARER_PROTOCOL_PREFIX),
-    );
-    const token = tokenProtocol?.slice(BEARER_PROTOCOL_PREFIX.length);
+      .map((item) => item.trim());
+    const bearer = protocols.find((item) => item.startsWith('bearer.'));
+    const token = bearer?.slice('bearer.'.length);
     const key = request.headers['sec-websocket-key'];
     if (
+      requestUrl.searchParams.has('token') ||
+      !protocols.includes(PROTOCOL) ||
+      !token ||
       request.headers.upgrade?.toLowerCase() !== 'websocket' ||
       request.headers['sec-websocket-version'] !== '13' ||
-      typeof key !== 'string' ||
-      !token ||
-      !protocols.includes(EVENTS_PROTOCOL)
+      typeof key !== 'string'
     ) {
       rejectUpgrade(socket, 401, 'Unauthorized');
       return;
     }
     try {
       await this.viewerTokens.authorize(token, runId);
+      const after = requestUrl.searchParams.get('after') ?? undefined;
+      const history = await this.store.eventsAfter(runId, after, 200);
+      const accept = createHash('sha1')
+        .update(key + WEBSOCKET_GUID)
+        .digest('base64');
+      socket.write(
+        [
+          'HTTP/1.1 101 Switching Protocols',
+          'Upgrade: websocket',
+          'Connection: Upgrade',
+          `Sec-WebSocket-Accept: ${accept}`,
+          `Sec-WebSocket-Protocol: ${PROTOCOL}`,
+          '\r\n',
+        ].join('\r\n'),
+      );
+      const sockets = this.clients.get(runId) ?? new Set<Socket>();
+      sockets.add(socket);
+      this.clients.set(runId, sockets);
+      for (const event of history.events)
+        socket.write(encodeFrame(JSON.stringify(eventEnvelope(event))));
+      const remove = () => {
+        sockets.delete(socket);
+        if (!sockets.size) this.clients.delete(runId);
+      };
+      socket.on('close', remove);
+      socket.on('error', remove);
+      socket.on('data', (data) => {
+        if ((data[0] & 0x0f) === 0x08) socket.end(closeFrame(1000));
+      });
     } catch {
       rejectUpgrade(socket, 401, 'Unauthorized');
-      return;
     }
+  };
+}
 
-    const accept = createHash('sha1')
-      .update(key + WEBSOCKET_GUID)
-      .digest('base64');
-    socket.write(
-      [
-        'HTTP/1.1 101 Switching Protocols',
-        'Upgrade: websocket',
-        'Connection: Upgrade',
-        `Sec-WebSocket-Accept: ${accept}`,
-        `Sec-WebSocket-Protocol: ${EVENTS_PROTOCOL}`,
-        '\r\n',
-      ].join('\r\n'),
-    );
-    const sockets = this.clients.get(runId) ?? new Set<Socket>();
-    sockets.add(socket);
-    this.clients.set(runId, sockets);
-    socket.write(
-      encodeFrame(
-        JSON.stringify({
-          type: 'viewer.connected',
-          runId,
-          observedAt: new Date(),
-        }),
-      ),
-    );
-    const remove = () => {
-      sockets.delete(socket);
-      if (!sockets.size) this.clients.delete(runId);
-    };
-    socket.on('close', remove);
-    socket.on('error', remove);
-    socket.on('data', (data) => {
-      if ((data[0] & 0x0f) === 0x08) socket.end();
-    });
+export function eventEnvelope(event: RunEvent) {
+  return {
+    id: event.eventId,
+    runId: event.runId,
+    type: event.type,
+    status: event.status,
+    timestamp: event.timestamp.toISOString(),
+    payload: event.payload,
   };
 }
 
@@ -136,9 +128,8 @@ function rejectUpgrade(socket: Socket, status: number, message: string): void {
 
 function encodeFrame(value: string): Buffer {
   const payload = Buffer.from(value);
-  if (payload.length < 126) {
+  if (payload.length < 126)
     return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
-  }
   if (payload.length <= 65_535) {
     const header = Buffer.allocUnsafe(4);
     header[0] = 0x81;
@@ -151,4 +142,10 @@ function encodeFrame(value: string): Buffer {
   header[1] = 127;
   header.writeBigUInt64BE(BigInt(payload.length), 2);
   return Buffer.concat([header, payload]);
+}
+
+function closeFrame(code: number): Buffer {
+  const payload = Buffer.allocUnsafe(2);
+  payload.writeUInt16BE(code, 0);
+  return Buffer.concat([Buffer.from([0x88, payload.length]), payload]);
 }

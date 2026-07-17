@@ -14,7 +14,7 @@ export interface EgyptAddressProfile {
   recipientName: string;
   mobileNumber: string;
   governorate: string;
-  cityArea: string;
+  cityOrArea: string;
   street: string;
   building: string;
   floor: string;
@@ -38,7 +38,7 @@ export const emptyEgyptAddress = (): EgyptAddressProfile => ({
   recipientName: '',
   mobileNumber: '',
   governorate: '',
-  cityArea: '',
+  cityOrArea: '',
   street: '',
   building: '',
   floor: '',
@@ -51,6 +51,17 @@ export const emptyEgyptAddressBook = (): EgyptAddressBook => ({
   defaultAddressId: null,
   addresses: [],
 });
+
+function canonicalStoredProfile(
+  value: Partial<EgyptAddressProfile> & { cityArea?: string },
+): EgyptAddressProfile {
+  const { cityArea, ...canonical } = value;
+  return {
+    ...emptyEgyptAddress(),
+    ...canonical,
+    cityOrArea: canonical.cityOrArea || cityArea || '',
+  };
+}
 
 export function createEgyptAddressId(): string {
   return `address-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -77,7 +88,7 @@ export function validateEgyptAddress(
     'recipientName',
     'mobileNumber',
     'governorate',
-    'cityArea',
+    'cityOrArea',
     'street',
     'building',
     'floor',
@@ -123,14 +134,20 @@ export async function loadEgyptAddressBook(
   const serialized = await readAddressValue(ownerId);
   if (!serialized) return emptyEgyptAddressBook();
   const value = JSON.parse(serialized) as
-    Partial<EgyptAddressBook> | Partial<EgyptAddressProfile>;
+    | Partial<EgyptAddressBook>
+    | (Partial<EgyptAddressProfile> & { cityArea?: string });
 
   if ('addresses' in value && Array.isArray(value.addresses)) {
-    const addresses = value.addresses.map((record) => ({
-      id: record.id,
-      label: record.label,
-      profile: { ...emptyEgyptAddress(), ...record.profile },
-    }));
+    const addresses = value.addresses.map((record) => {
+      const legacyProfile = record.profile as EgyptAddressProfile & {
+        cityArea?: string;
+      };
+      return {
+        id: record.id,
+        label: record.label,
+        profile: canonicalStoredProfile(legacyProfile),
+      };
+    });
     const defaultAddressId = addresses.some(
       (record) => record.id === value.defaultAddressId,
     )
@@ -139,10 +156,10 @@ export async function loadEgyptAddressBook(
     return { defaultAddressId, addresses };
   }
 
-  const legacyProfile = {
-    ...emptyEgyptAddress(),
-    ...(value as Partial<EgyptAddressProfile>),
+  const legacyValue = value as Partial<EgyptAddressProfile> & {
+    cityArea?: string;
   };
+  const legacyProfile = canonicalStoredProfile(legacyValue);
   const legacyId = 'address-legacy';
   return {
     defaultAddressId: legacyId,

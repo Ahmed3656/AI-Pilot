@@ -1,9 +1,6 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
-  Animated,
   KeyboardAvoidingView,
-  Modal,
-  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -19,18 +16,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/components/Toast';
 import { useTheme } from '@/contexts/ThemeContext';
 import { MessageKey, useLocalization } from '@/localization';
-import {
-  clarificationFields,
-  compactClarification,
-  detectShoppingCategory,
-} from '../clarification';
+import { detectShoppingCategory } from '../clarification';
 import { createShoppingRun } from '../shopping.service';
-import { CategorySelection, ShoppingCategory } from '../types';
+import { RequestedCategory, ShoppingCategory } from '../types';
 import { EgyptAddressRecord, loadEgyptAddressBook } from '../address';
-import {
-  ChoiceChip,
-  LabelledInput,
-} from '../components/ShoppingControls';
+import { ChoiceChip } from '../components/ShoppingControls';
 
 const examples: { category: ShoppingCategory; key: MessageKey }[] = [
   { category: 'retail', key: 'exampleRetail' },
@@ -38,7 +28,7 @@ const examples: { category: ShoppingCategory; key: MessageKey }[] = [
   { category: 'cinema', key: 'exampleCinema' },
 ];
 
-const categoryChoices: CategorySelection[] = [
+const categoryChoices: RequestedCategory[] = [
   'auto',
   'retail',
   'food',
@@ -52,28 +42,16 @@ export function ShoppingHomeScreen() {
   const { locale, t, textDirection, rowDirection } = useLocalization();
   const [request, setRequest] = useState('');
   const [categorySelection, setCategorySelection] =
-    useState<CategorySelection>('auto');
-  const [clarification, setClarification] = useState<Record<string, string>>(
-    {},
-  );
+    useState<RequestedCategory>('auto');
   const [showCategoryMenu, setShowCategoryMenu] = useState(false);
-  const [preferencesMounted, setPreferencesMounted] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [defaultAddress, setDefaultAddress] =
     useState<EgyptAddressRecord | null>(null);
-  const sheetTranslateY = useRef(new Animated.Value(720)).current;
-  const sheetDragOrigin = useRef(0);
   const addressOwnerId = user?.id ?? 'guest';
   const detectedCategory = useMemo(
     () => detectShoppingCategory(request),
     [request],
   );
-  const resolvedCategory =
-    categorySelection === 'auto' ? detectedCategory : categorySelection;
-  const requestCategory: CategorySelection =
-    categorySelection === 'auto'
-      ? (detectedCategory ?? 'auto')
-      : categorySelection;
   const activeCategoryLabel =
     categorySelection === 'auto' && detectedCategory
       ? t(detectedCategory)
@@ -105,76 +83,9 @@ export function ShoppingHomeScreen() {
     }, [addressOwnerId]),
   );
 
-  const closePreferences = useCallback(() => {
-    Animated.timing(sheetTranslateY, {
-      toValue: 720,
-      duration: 220,
-      useNativeDriver: true,
-    }).start(() => setPreferencesMounted(false));
-  }, [sheetTranslateY]);
-
-  const returnPreferencesToOpen = useCallback(() => {
-    Animated.spring(sheetTranslateY, {
-      toValue: 0,
-      damping: 22,
-      stiffness: 240,
-      mass: 0.8,
-      useNativeDriver: true,
-    }).start();
-  }, [sheetTranslateY]);
-
-  const sheetPanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_, gesture) =>
-          Math.abs(gesture.dy) > 3 &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx),
-        onPanResponderGrant: () => {
-          sheetTranslateY.stopAnimation((value) => {
-            sheetDragOrigin.current = value;
-          });
-        },
-        onPanResponderMove: (_, gesture) => {
-          sheetTranslateY.setValue(
-            Math.max(0, sheetDragOrigin.current + gesture.dy),
-          );
-        },
-        onPanResponderRelease: (_, gesture) => {
-          const distance = Math.max(
-            0,
-            sheetDragOrigin.current + gesture.dy,
-          );
-          if (distance > 120 || gesture.vy > 0.8) {
-            closePreferences();
-          } else {
-            returnPreferencesToOpen();
-          }
-        },
-        onPanResponderTerminate: returnPreferencesToOpen,
-      }),
-    [closePreferences, returnPreferencesToOpen, sheetTranslateY],
-  );
-
-  const openPreferences = () => {
-    if (!resolvedCategory) return;
-    sheetTranslateY.setValue(720);
-    setPreferencesMounted(true);
-    requestAnimationFrame(() => {
-      Animated.spring(sheetTranslateY, {
-        toValue: 0,
-        damping: 22,
-        stiffness: 220,
-        mass: 0.9,
-        useNativeDriver: true,
-      }).start();
-    });
-  };
-
   const chooseExample = (value: string) => {
     setRequest(value);
     setCategorySelection('auto');
-    setClarification({});
     setShowCategoryMenu(false);
   };
 
@@ -186,12 +97,9 @@ export function ShoppingHomeScreen() {
     setIsStarting(true);
     try {
       const run = await createShoppingRun({
-        market: 'EG',
-        currency: 'EGP',
+        query: request.trim(),
         locale,
-        category: requestCategory,
-        request: request.trim(),
-        clarification: compactClarification(clarification),
+        category: categorySelection,
       });
       router.push(`/run/${run.id}` as Href);
     } catch {
@@ -355,7 +263,7 @@ export function ShoppingHomeScreen() {
                 ]}
               >
                 {defaultAddress
-                  ? `${defaultAddress.label} · ${defaultAddress.profile.cityArea}, ${defaultAddress.profile.governorate}`
+                  ? `${defaultAddress.label} · ${defaultAddress.profile.cityOrArea}, ${defaultAddress.profile.governorate}`
                   : t('noSavedAddresses')}
               </Text>
             </View>
@@ -379,7 +287,6 @@ export function ShoppingHomeScreen() {
                     label={t(category)}
                     onPress={() => {
                       setCategorySelection(category);
-                      setClarification({});
                       setShowCategoryMenu(false);
                     }}
                     selected={categorySelection === category}
@@ -419,23 +326,6 @@ export function ShoppingHomeScreen() {
                     ✦ {activeCategoryLabel}
                   </Text>
                 </Pressable>
-                {resolvedCategory ? (
-                  <Pressable
-                    accessibilityLabel={t('addDetails')}
-                    accessibilityRole="button"
-                    onPress={openPreferences}
-                    style={[
-                      styles.toolButton,
-                      { backgroundColor: theme.colors.background },
-                    ]}
-                  >
-                    <Text
-                      style={{ color: theme.colors.text, fontWeight: '700' }}
-                    >
-                      + {t('addDetails')}
-                    </Text>
-                  </Pressable>
-                ) : null}
               </View>
               <Pressable
                 accessibilityLabel={t('sendRequest')}
@@ -473,90 +363,6 @@ export function ShoppingHomeScreen() {
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
-
-      <Modal
-        animationType="none"
-        onRequestClose={closePreferences}
-        statusBarTranslucent
-        transparent
-        visible={preferencesMounted}
-      >
-        <View style={styles.modalRoot}>
-          <Pressable
-            accessibilityLabel={t('hideDetails')}
-            onPress={closePreferences}
-            style={styles.backdrop}
-          />
-          <Animated.View
-            style={[
-              styles.sheet,
-              {
-                backgroundColor: theme.colors.surface,
-                borderColor: theme.colors.border,
-                transform: [{ translateY: sheetTranslateY }],
-              },
-            ]}
-          >
-            <View
-              accessibilityLabel={t('hideDetails')}
-              accessibilityRole="adjustable"
-              style={styles.sheetDragArea}
-              {...sheetPanResponder.panHandlers}
-            >
-              <View
-                style={[
-                  styles.sheetHandle,
-                  { backgroundColor: theme.colors.border },
-                ]}
-              />
-            </View>
-            <View style={[styles.sheetHeader, rowDirection]}>
-              <View style={styles.sheetTitleBlock}>
-                <Text
-                  style={[
-                    styles.sheetTitle,
-                    textDirection,
-                    { color: theme.colors.text },
-                  ]}
-                >
-                  {t('clarificationTitle')}
-                </Text>
-                <Text
-                  style={[
-                    styles.sheetHint,
-                    textDirection,
-                    { color: theme.colors.muted },
-                  ]}
-                >
-                  {t('optionalHint')}
-                </Text>
-              </View>
-            </View>
-            <ScrollView
-              contentContainerStyle={styles.fields}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
-              {resolvedCategory
-                ? clarificationFields[resolvedCategory].map((field) => (
-                    <LabelledInput
-                      keyboardType={field.keyboardType}
-                      key={field.key}
-                      label={t(field.label)}
-                      onChangeText={(value) =>
-                        setClarification((current) => ({
-                          ...current,
-                          [field.key]: value,
-                        }))
-                      }
-                      value={clarification[field.key] ?? ''}
-                    />
-                  ))
-                : null}
-            </ScrollView>
-          </Animated.View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }

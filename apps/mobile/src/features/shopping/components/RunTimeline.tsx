@@ -1,28 +1,64 @@
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { Card } from '@/components';
+import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useLocalization } from '@/localization';
-import { RunEvent, RunScreenshot } from '../types';
+import { EvidenceReference, EventEnvelope } from '../types';
 
-function CouponStatus({ status }: Pick<RunEvent, 'status'>) {
-  const { t } = useLocalization();
-  const { theme } = useTheme();
-  const label =
-    status === 'applied'
-      ? t('couponApplied')
-      : status === 'rejected'
-        ? t('couponRejected')
-        : t('couponTrying');
-  const color =
-    status === 'applied'
-      ? theme.colors.success
-      : status === 'rejected'
-        ? theme.colors.danger
-        : theme.colors.warning;
-  return <Text style={[styles.coupon, { color }]}>{label}</Text>;
+function eventMessage(event: EventEnvelope): string {
+  switch (event.type) {
+    case 'run.status_changed':
+      return `${event.payload.from} → ${event.payload.to}${event.payload.reasonCode ? ` · ${event.payload.reasonCode}` : ''}`;
+    case 'merchant.attempt_started':
+      return event.payload.merchantDomain;
+    case 'merchant.attempt_completed':
+      return `${event.payload.outcome}${event.payload.failureCode ? ` · ${event.payload.failureCode}` : ''}`;
+    case 'offer.recorded':
+      return `${event.payload.validity} · ${event.payload.offerId}`;
+    case 'coupon.attempted':
+      return `${event.payload.status}${event.payload.rejectionReason ? ` · ${event.payload.rejectionReason}` : ''}`;
+    case 'evidence.captured':
+      return `${event.payload.kind} · ${event.payload.evidenceId}`;
+    case 'run.warning':
+      return `${event.payload.code} · ${event.payload.message}`;
+    case 'report.updated':
+      return `valid ${event.payload.validOfferCount} · incomplete ${event.payload.incompleteOfferCount} · excluded ${event.payload.excludedOfferCount}`;
+    case 'control.lease_expired':
+      return `${event.payload.leaseId} · recovery ${event.payload.recovery}`;
+    case 'run.failed':
+      return event.payload.failureCode;
+    default:
+      return event.type;
+  }
 }
 
-export function RunTimeline({ events }: { events: RunEvent[] }) {
+function eventColor(
+  event: EventEnvelope,
+  colors: {
+    primary: string;
+    success: string;
+    warning: string;
+    danger: string;
+  },
+) {
+  if (event.type === 'run.failed') return colors.danger;
+  if (event.type === 'run.warning') return colors.warning;
+  if (event.type === 'merchant.attempt_completed') {
+    return event.payload.outcome === 'succeeded'
+      ? colors.success
+      : colors.warning;
+  }
+  if (event.type === 'coupon.attempted') {
+    return event.payload.status === 'verified'
+      ? colors.success
+      : event.payload.status === 'rejected'
+        ? colors.danger
+        : colors.warning;
+  }
+  return colors.primary;
+}
+
+export function RunTimeline({ events }: { events: EventEnvelope[] }) {
   const { theme } = useTheme();
   const { t, textDirection, rowDirection, locale } = useLocalization();
   if (events.length === 0) {
@@ -34,86 +70,81 @@ export function RunTimeline({ events }: { events: RunEvent[] }) {
   }
   return (
     <View style={styles.timeline}>
-      {events.map((event) => {
-        const dotColor =
-          event.severity === 'error'
-            ? theme.colors.danger
-            : event.severity === 'warning'
-              ? theme.colors.warning
-              : event.severity === 'success'
-                ? theme.colors.success
-                : theme.colors.primary;
-        return (
-          <View key={event.id} style={[styles.event, rowDirection]}>
-            <View style={[styles.dot, { backgroundColor: dotColor }]} />
-            <View style={styles.eventBody}>
-              <View style={[styles.eventTop, rowDirection]}>
-                <Text
-                  style={[
-                    styles.eventTitle,
-                    textDirection,
-                    { color: theme.colors.text },
-                  ]}
-                >
-                  {event.type === 'coupon' ? t('couponAttempt') : event.title}
-                </Text>
-                <Text style={{ color: theme.colors.muted, fontSize: 11 }}>
-                  {new Intl.DateTimeFormat(
-                    locale === 'ar' ? 'ar-EG' : 'en-EG',
-                    {
-                      hour: 'numeric',
-                      minute: '2-digit',
-                    },
-                  ).format(new Date(event.createdAt))}
-                </Text>
-              </View>
-              {event.type === 'coupon' ? (
-                <CouponStatus status={event.status} />
-              ) : null}
-              {event.message ? (
-                <Text
-                  style={[
-                    styles.message,
-                    textDirection,
-                    { color: theme.colors.muted },
-                  ]}
-                >
-                  {event.message}
-                </Text>
-              ) : null}
-              {event.imageUrl ? (
-                <Image
-                  accessibilityLabel={event.title}
-                  resizeMode="cover"
-                  source={{ uri: event.imageUrl }}
-                  style={styles.eventImage}
-                />
-              ) : null}
+      {events.map((event) => (
+        <View key={event.id} style={[styles.event, rowDirection]}>
+          <View
+            style={[
+              styles.dot,
+              {
+                backgroundColor: eventColor(event, {
+                  primary: theme.colors.primary,
+                  success: theme.colors.success,
+                  warning: theme.colors.warning,
+                  danger: theme.colors.danger,
+                }),
+              },
+            ]}
+          />
+          <View style={styles.eventBody}>
+            <View style={[styles.eventTop, rowDirection]}>
+              <Text
+                style={[
+                  styles.eventTitle,
+                  textDirection,
+                  { color: theme.colors.text },
+                ]}
+              >
+                {event.type}
+              </Text>
+              <Text style={{ color: theme.colors.muted, fontSize: 11 }}>
+                {new Intl.DateTimeFormat(locale, {
+                  timeZone: 'Africa/Cairo',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                }).format(new Date(event.timestamp))}
+              </Text>
             </View>
+            <Text
+              style={[
+                styles.message,
+                textDirection,
+                { color: theme.colors.muted },
+              ]}
+            >
+              {eventMessage(event)}
+            </Text>
           </View>
-        );
-      })}
+        </View>
+      ))}
     </View>
   );
 }
 
-export function ScreenshotGallery({
-  screenshots,
+export function EvidenceGallery({
+  evidence,
 }: {
-  screenshots: RunScreenshot[];
+  evidence: EvidenceReference[];
 }) {
   const { theme } = useTheme();
-  const { textDirection, locale } = useLocalization();
+  const { accessToken } = useAuth();
+  const { t, textDirection, locale } = useLocalization();
   return (
     <View style={styles.gallery}>
-      {screenshots.map((screenshot) => (
-        <Card key={screenshot.id}>
-          <Image
-            accessibilityLabel={screenshot.merchantName}
-            resizeMode="cover"
-            source={{ uri: screenshot.imageUrl }}
-            style={styles.screenshot}
-          />
+      {evidence.map((item) => (
+        <Card key={item.id}>
+          {item.kind === 'screenshot' ? (
+            <Image
+              accessibilityLabel={`${t('evidence')} ${item.id}`}
+              resizeMode="cover"
+              source={{
+                uri: item.uri,
+                ...(accessToken
+                  ? { headers: { Authorization: `Bearer ${accessToken}` } }
+                  : {}),
+              }}
+              style={styles.screenshot}
+            />
+          ) : null}
           <Text
             style={[
               styles.merchant,
@@ -121,15 +152,17 @@ export function ScreenshotGallery({
               { color: theme.colors.text },
             ]}
           >
-            {screenshot.merchantName}
+            {item.kind} · {item.id}
           </Text>
           <Text
             style={[textDirection, { color: theme.colors.muted, fontSize: 12 }]}
           >
-            {new Intl.DateTimeFormat(locale === 'ar' ? 'ar-EG' : 'en-EG', {
+            {new Intl.DateTimeFormat(locale, {
+              timeZone: 'Africa/Cairo',
               dateStyle: 'medium',
               timeStyle: 'short',
-            }).format(new Date(screenshot.capturedAt))}
+            }).format(new Date(item.capturedAt))}{' '}
+            · {t('redactedEvidence')}
           </Text>
         </Card>
       ))}
@@ -138,21 +171,14 @@ export function ScreenshotGallery({
 }
 
 const styles = StyleSheet.create({
-  timeline: { gap: 16 },
-  event: { alignItems: 'flex-start', gap: 12 },
+  timeline: { gap: 14 },
+  event: { alignItems: 'flex-start', gap: 10 },
   dot: { width: 10, height: 10, borderRadius: 5, marginTop: 5 },
-  eventBody: { flex: 1, gap: 5 },
-  eventTop: { justifyContent: 'space-between', gap: 12 },
-  eventTitle: { flex: 1, fontSize: 15, fontWeight: '800' },
-  message: { fontSize: 14, lineHeight: 20 },
-  coupon: { fontSize: 13, fontWeight: '900' },
-  eventImage: {
-    width: '100%',
-    aspectRatio: 1.7,
-    borderRadius: 10,
-    marginTop: 4,
-  },
+  eventBody: { flex: 1, gap: 3 },
+  eventTop: { justifyContent: 'space-between', gap: 8 },
+  eventTitle: { flex: 1, fontSize: 14, fontWeight: '800' },
+  message: { fontSize: 13, lineHeight: 19 },
   gallery: { gap: 10 },
-  screenshot: { width: '100%', aspectRatio: 1.7, borderRadius: 10 },
+  screenshot: { width: '100%', height: 190, borderRadius: 10 },
   merchant: { fontSize: 14, fontWeight: '800' },
 });
