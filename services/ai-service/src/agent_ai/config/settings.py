@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     model: str = "gpt-5.6"
     openai_api_key: str = ""
-    selenium_remote_url: str = "http://selenium:4444/wd/hub"
-    control_api_url: str = "http://control-api:8000"
+    selenium_remote_url: str = "http://browser:4444/wd/hub"
+    control_api_url: str = "http://api:3000"
     internal_token: str = ""
     max_computer_steps: int = Field(default=80, ge=1, le=200)
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=120)

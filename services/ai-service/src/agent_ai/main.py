@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 
+from agent_ai.api.errors import contract_error
 from agent_ai.api.router import api_router
 from agent_ai.config.settings import get_settings
 from agent_ai.orchestrator import RunManager
@@ -31,6 +33,23 @@ def create_app() -> FastAPI:
     application.state.settings = settings
     application.state.control_client = control
     application.state.run_manager = RunManager(settings, control)
+    application.add_exception_handler(
+        RequestValidationError,
+        lambda request, exc: contract_error(
+            request,
+            "VALIDATION_ERROR",
+            "Request validation failed",
+            400,
+            details=[
+                {
+                    "field": "/" + "/".join(str(part) for part in error["loc"] if part != "body"),
+                    "code": str(error["type"]),
+                    "message": str(error["msg"]),
+                }
+                for error in exc.errors()
+            ],
+        ),
+    )
     application.include_router(api_router)
     return application
 

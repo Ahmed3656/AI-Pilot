@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
 
 from agent_ai.browser.safety import SafetyViolation, assert_allowed_url
-from agent_ai.models import Candidate, Category, MoneyBreakdown
+from agent_ai.models import Candidate, Category, MandatoryFee, MoneyBreakdown
 from agent_ai.orchestrator.ranking import rank_candidates
 
 _COMMON = """
@@ -25,10 +25,14 @@ URL and exact before/after EGP total, remove one code before another, claim only
 verified in the interface, restore the winning cart, and stack only if the UI explicitly says
 stacking is supported.
 
-Finish with JSON only. Include `candidates`, each with merchant, title, url, exact_match,
-valid, subtotal, delivery_fee, service_fee, booking_fee, discount, total, currency (EGP),
-and details. Include `coupon_attempts`, `stopped_before`, and `notes`. A missing amount must
-be null, never guessed.
+Call record_dealpilot_discovery immediately for every merchant attempt, partial offer, coupon
+result, and warning. Do not include secrets or screenshot bytes in those calls. Finish with
+JSON only. Include `candidates`, each with merchant, title, url, exact_match, valid, subtotal,
+delivery_fee, service_fee, booking_fee, tax, mandatory_fees, discount, total, currency (EGP),
+evidence_ids, and details. Components that cannot apply are "0.00"; a component that may apply
+but was not verified is null. Include `coupon_attempts`, `stopped_before`, and `notes`. A missing
+amount must be null, never guessed. The reported total must equal subtotal + delivery + service
++ booking + tax + mandatory fees - verified discount.
 """
 
 _CATEGORY = {
@@ -80,9 +84,18 @@ def _decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        amount = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"Invalid monetary amount {value!r}") from exc
+    if amount < 0:
+        raise ValueError("Money values must be non-negative")
+    return amount
+
+
+def _money(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    return str(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
 _REQUIRED_DETAILS: dict[Category, set[str]] = {
@@ -121,26 +134,43 @@ _REQUIRED_DETAILS: dict[Category, set[str]] = {
     },
 }
 
+_COUPON_REJECTION_REASONS = {
+    "invalid_code",
+    "expired",
+    "not_eligible",
+    "minimum_not_met",
+    "merchant_restriction",
+    "product_restriction",
+    "payment_method_required",
+    "already_applied",
+    "not_stackable",
+    "technical_failure",
+    "unknown",
+}
+
 
 def _candidate_is_complete(
     category: Category,
     item: dict[str, Any],
     details: dict[str, Any],
 ) -> bool:
-    if item.get("subtotal") is None or item.get("total") is None:
+    money_fields = (
+        "subtotal",
+        "delivery_fee",
+        "service_fee",
+        "booking_fee",
+        "tax",
+        "discount",
+        "total",
+    )
+    if any(item.get(field) is None for field in money_fields):
         return False
     if not _REQUIRED_DETAILS[category].issubset(details):
         return False
-    if category is Category.RETAIL:
-        return item.get("delivery_fee") is not None
     if category is Category.FOOD:
         tip = str(details.get("tip", "")).strip()
-        return (
-            all(item.get(key) is not None for key in ("delivery_fee", "service_fee", "discount"))
-            and tip in {"0", "0.0", "0.00"}
-            and details.get("tip_excluded") is True
-        )
-    return item.get("booking_fee") is not None
+        return tip in {"0", "0.0", "0.00"} and details.get("tip_excluded") is True
+    return True
 
 
 def _sanitize_coupon_attempts(value: Any) -> list[dict[str, Any]]:
@@ -170,21 +200,42 @@ def _sanitize_coupon_attempts(value: Any) -> list[dict[str, Any]]:
         stacking_supported = item.get("ui_explicitly_supports_stacking") is True
         if stacked and not stacking_supported:
             verified = False
+        evidence_ids = [str(evidence_id) for evidence_id in item.get("evidence_ids", [])]
+        if len(set(evidence_ids)) < 2:
+            verified = False
+            rejection_reason = "technical_failure"
+        else:
+            raw_rejection = str(item.get("rejection_reason", "unknown"))
+            rejection_reason = (
+                None
+                if verified
+                else (raw_rejection if raw_rejection in _COUPON_REJECTION_REASONS else "unknown")
+            )
         sanitized.append(
             {
                 "merchant": platform,
                 "code": str(item.get("code", "")),
                 "source_url": source_url,
-                "before_total": str(before) if before is not None else None,
-                "after_total": str(after) if after is not None else None,
+                "before_total": _money(before),
+                "after_total": _money(after),
                 "verified": verified,
-                "saving": str(before - after) if verified and before and after is not None else "0",
+                "saving": (
+                    _money(before - after) if verified and before and after is not None else "0.00"
+                ),
+                "rejection_reason": rejection_reason,
+                "message": item.get("message"),
+                "evidence_ids": evidence_ids,
             }
         )
     return sanitized
 
 
-def validate_agent_result(category: Category, text: str) -> dict[str, Any]:
+def validate_agent_result(
+    category: Category,
+    text: str,
+    *,
+    approved_domains: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
     """Turn untrusted model output into a deterministic ranked result."""
     raw = _extract_json(text)
     raw_candidates = raw.get("candidates", [])
@@ -198,27 +249,65 @@ def validate_agent_result(category: Category, text: str) -> dict[str, Any]:
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
         domain_allowed = True
         try:
-            assert_allowed_url(str(item.get("url", "")), category)
+            assert_allowed_url(
+                str(item.get("url", "")),
+                category,
+                approved_domains=approved_domains,
+            )
         except SafetyViolation:
             domain_allowed = False
         complete_details = _candidate_is_complete(category, item, details)
+        mandatory_fees: list[MandatoryFee] = []
+        raw_fees = item.get("mandatory_fees", [])
+        if isinstance(raw_fees, list):
+            for fee in raw_fees:
+                if not isinstance(fee, dict) or fee.get("amount") is None:
+                    complete_details = False
+                    continue
+                mandatory_fees.append(
+                    MandatoryFee(
+                        label=str(fee.get("label", "mandatory fee")),
+                        amount=_decimal(fee["amount"]) or Decimal("0"),
+                        evidence_ids=tuple(str(value) for value in fee.get("evidence_ids", [])),
+                    )
+                )
+        money = MoneyBreakdown(
+            subtotal=_decimal(item.get("subtotal")),
+            delivery_fee=_decimal(item.get("delivery_fee")),
+            service_fee=_decimal(item.get("service_fee")),
+            booking_fee=_decimal(item.get("booking_fee")),
+            tax=_decimal(item.get("tax")),
+            mandatory_fees=tuple(mandatory_fees),
+            discount=_decimal(item.get("discount")) or Decimal("0"),
+            total=_decimal(item.get("total")),
+            currency=currency,
+        )
+        total_consistent = money.validate_total()
+        evidence_ids = tuple(str(value) for value in item.get("evidence_ids", []))
+        incomplete_reason = None
+        if not total_consistent:
+            incomplete_reason = "INCONSISTENT_TOTAL"
+        elif not complete_details:
+            incomplete_reason = "MISSING_REQUIRED_FIELD"
+        elif not evidence_ids:
+            incomplete_reason = "MISSING_EVIDENCE"
         candidates.append(
             Candidate(
                 merchant=str(item.get("merchant", "")),
                 title=str(item.get("title", "")),
                 url=str(item.get("url", "")),
                 exact_match=item.get("exact_match") is True,
-                valid=item.get("valid") is True and domain_allowed and complete_details,
-                money=MoneyBreakdown(
-                    subtotal=_decimal(item.get("subtotal")),
-                    delivery_fee=_decimal(item.get("delivery_fee")),
-                    service_fee=_decimal(item.get("service_fee")),
-                    booking_fee=_decimal(item.get("booking_fee")),
-                    discount=_decimal(item.get("discount")),
-                    total=_decimal(item.get("total")),
-                    currency=currency,
+                valid=(
+                    item.get("valid") is True
+                    and domain_allowed
+                    and complete_details
+                    and total_consistent
+                    and bool(evidence_ids)
                 ),
+                money=money,
                 details=details,
+                evidence_ids=evidence_ids,
+                incomplete_reason=incomplete_reason,
             )
         )
     ranking = rank_candidates(category, candidates)
@@ -230,30 +319,25 @@ def validate_agent_result(category: Category, text: str) -> dict[str, Any]:
             "url": candidate.url,
             "exact_match": candidate.exact_match,
             "valid": candidate.valid,
-            "subtotal": (
-                str(candidate.money.subtotal) if candidate.money.subtotal is not None else None
-            ),
-            "delivery_fee": (
-                str(candidate.money.delivery_fee)
-                if candidate.money.delivery_fee is not None
-                else None
-            ),
-            "service_fee": (
-                str(candidate.money.service_fee)
-                if candidate.money.service_fee is not None
-                else None
-            ),
-            "booking_fee": (
-                str(candidate.money.booking_fee)
-                if candidate.money.booking_fee is not None
-                else None
-            ),
-            "discount": (
-                str(candidate.money.discount) if candidate.money.discount is not None else None
-            ),
-            "total": str(candidate.money.total) if candidate.money.total is not None else None,
+            "subtotal": (_money(candidate.money.subtotal)),
+            "delivery_fee": _money(candidate.money.delivery_fee),
+            "service_fee": _money(candidate.money.service_fee),
+            "booking_fee": _money(candidate.money.booking_fee),
+            "tax": _money(candidate.money.tax),
+            "mandatory_fees": [
+                {
+                    "label": fee.label,
+                    "amount": _money(fee.amount),
+                    "evidence_ids": list(fee.evidence_ids),
+                }
+                for fee in candidate.money.mandatory_fees
+            ],
+            "discount": _money(candidate.money.discount),
+            "total": _money(candidate.money.total),
             "currency": candidate.money.currency,
             "details": candidate.details,
+            "evidence_ids": list(candidate.evidence_ids),
+            "incomplete_reason": candidate.incomplete_reason,
         }
         for candidate in candidates
     ]
@@ -268,7 +352,7 @@ def validate_agent_result(category: Category, text: str) -> dict[str, Any]:
                 "merchant": winner.merchant,
                 "title": winner.title,
                 "url": winner.url,
-                "total": str(winner.money.total),
+                "total": _money(winner.money.total),
                 "details": winner.details,
             }
             if winner
