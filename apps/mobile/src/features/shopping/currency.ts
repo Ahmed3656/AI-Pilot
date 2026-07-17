@@ -18,11 +18,16 @@ export function parseNumericInput(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export function formatEGP(amount: number | null, locale: AppLocale): string {
-  if (amount === null || !Number.isFinite(amount)) return '— EGP';
+export function formatEGP(
+  amount: string | number | null,
+  locale: AppLocale,
+): string {
+  if (amount === null) return '— EGP';
+  const numericAmount = typeof amount === 'string' ? Number(amount) : amount;
+  if (!Number.isFinite(numericAmount)) return '— EGP';
   const formatted = new Intl.NumberFormat(
-    locale === 'ar' ? 'ar-EG-u-nu-arab' : 'en-EG',
-    { maximumFractionDigits: 2, minimumFractionDigits: 0 },
-  ).format(amount);
+    locale === 'ar-EG' ? 'ar-EG-u-nu-arab' : 'en-EG',
+    { maximumFractionDigits: 2, minimumFractionDigits: 2 },
+  ).format(numericAmount);
   return `\u2066${formatted} EGP\u2069`;
 }

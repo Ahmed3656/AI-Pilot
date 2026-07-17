@@ -171,7 +171,7 @@ export function SettingsScreen() {
                           { color: theme.colors.muted },
                         ]}
                       >
-                        {record.profile.street}, {record.profile.cityArea},{' '}
+                        {record.profile.street}, {record.profile.cityOrArea},{' '}
                         {record.profile.governorate}
                       </Text>
                     </View>

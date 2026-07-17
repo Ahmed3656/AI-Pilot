@@ -11,7 +11,7 @@ import { TextStyle, ViewStyle } from 'react-native';
 import { STORAGE_KEYS } from '@/constants/storage';
 import { storage } from '@/storage/storage';
 
-export type AppLocale = 'en' | 'ar';
+export type AppLocale = 'en-EG' | 'ar-EG';
 
 const en = {
   appName: 'DealPilot',
@@ -121,7 +121,7 @@ const en = {
   recipientName: 'Recipient name',
   mobileNumber: 'Egyptian mobile number',
   governorate: 'Governorate',
-  cityArea: 'City / area',
+  cityOrArea: 'City / area',
   street: 'Street',
   building: 'Building',
   floor: 'Floor',
@@ -138,8 +138,15 @@ const en = {
     'Browser preview keeps this profile only for the current session. SecureStore is used on physical phones.',
   runTitle: 'Live deal run',
   runSubtitle: 'Follow every checked option and step in real time.',
-  queued: 'Queued',
-  running: 'Running',
+  clarifying: 'Clarification needed',
+  discovering: 'Discovering merchants',
+  awaitingDomainApproval: 'Waiting for merchant approval',
+  comparing: 'Comparing offers',
+  awaitingAddressConsent: 'Waiting for address consent',
+  awaitingSeatHoldApproval: 'Waiting for seat-hold approval',
+  couponTesting: 'Testing coupons',
+  readyForHandoff: 'Ready for handoff',
+  userTakeover: 'Human control active',
   paused: 'Paused',
   completed: 'Completed',
   cancelled: 'Cancelled',
@@ -161,15 +168,22 @@ const en = {
   partialResults: 'Partial results',
   screenshots: 'Screenshots',
   approvals: 'Your approval is needed',
+  clarificationRequired: 'DealPilot needs clarification',
+  submitAnswers: 'Submit answers',
   merchantApproval: 'Merchant approval',
   merchantApprovalBody:
-    'Approve before DealPilot continues with this merchant.',
+    'Select the exact Egyptian merchant domains DealPilot may visit.',
+  approveSelected: 'Approve selected domains',
   addressConsent: 'Address-sharing consent',
   addressConsentPrefix: 'Only this merchant will receive your saved address:',
   addressConsentBody:
     'The address is loaded only after you approve and its temporary copy is cleared after transmission.',
+  addressFieldsShared: 'Fields requested',
+  shareAddress: 'Share address with these merchants',
   seatHoldApproval: 'Seat-hold approval',
   seatHoldBody: 'Approve this temporary seat hold before it expires.',
+  seatHoldDuration: 'Expected hold duration',
+  approveSeatHold: 'Approve seat hold',
   approve: 'Approve',
   decline: 'Decline',
   approving: 'Sending…',
@@ -185,6 +199,7 @@ const en = {
     'View-only while DealPilot works. Take over only when the agent asks for help.',
   viewerUnavailable:
     'The remote browser will appear when the agent opens a merchant.',
+  viewerLoadFailed: 'The remote browser could not be loaded yet.',
   takeOver: 'Take over',
   takingOver: 'Requesting control…',
   releaseControl: 'Release to DealPilot',
@@ -192,6 +207,8 @@ const en = {
   viewOnly: 'View-only · AI working',
   controlFailed: 'Could not get a control token. Try again.',
   releaseFailed: 'Could not release control. Try again.',
+  controlLeaseExpired:
+    'Browser control expired. Input was disabled and DealPilot is recovering safely.',
   paymentWarningTitle: 'Manual payment only',
   paymentWarning:
     'Never send card details, OTPs, PINs, or wallet codes to DealPilot. Enter payment details yourself only while you have control.',
@@ -200,16 +217,40 @@ const en = {
     'Totals are compared only when every required charge was verified.',
   lowestVerified: 'Lowest verified total among checked options',
   noVerifiedTotal: 'No checked option has a fully verified total yet.',
+  reportInProgress: 'The comparison report is still being verified.',
+  merchantProgress: 'Merchant progress',
+  offers: 'Offers',
+  noOffers: 'No offers have been recorded yet.',
+  valid: 'Valid offer',
+  excluded: 'Excluded offer',
+  incomplete: 'Incomplete offer',
   subtotal: 'Items',
   delivery: 'Delivery',
   serviceFee: 'Service fee',
+  bookingFee: 'Booking fee',
   taxes: 'Taxes',
   discount: 'Discount',
   total: 'Verified total',
+  optionalTip: 'Optional tip',
+  exclusionReason: 'Exclusion reason',
+  unknownReason: 'No reason was provided.',
+  match: 'Match',
+  exactMatch: 'Exact',
+  notExact: 'Not exact',
   incompleteReason: 'Incomplete reason',
   completeReason: 'None — total verified',
   unavailableReason: 'Merchant has not returned a complete option.',
   verifiedAt: 'Verified',
+  couponAttempts: 'Coupon attempts',
+  partialFailures: 'Partial failures',
+  retryable: 'retryable',
+  notRetryable: 'not retryable',
+  evidence: 'Evidence',
+  redactedEvidence: 'redacted',
+  failure: 'Run failure',
+  handoffReady:
+    'The same paused merchant browser session is ready for manual takeover.',
+  finishSession: 'Finish manual session',
   rating: 'Rating',
   showtime: 'Showtime',
   venue: 'Venue',
@@ -324,7 +365,7 @@ const ar: Record<keyof typeof en, string> = {
   recipientName: 'اسم المستلم',
   mobileNumber: 'رقم الموبايل المصري',
   governorate: 'المحافظة',
-  cityArea: 'المدينة / المنطقة',
+  cityOrArea: 'المدينة / المنطقة',
   street: 'الشارع',
   building: 'المبنى',
   floor: 'الدور',
@@ -341,8 +382,15 @@ const ar: Record<keyof typeof en, string> = {
     'تحتفظ معاينة المتصفح بالملف خلال هذه الجلسة فقط. يُستخدم SecureStore على الهواتف الفعلية.',
   runTitle: 'مهمة البحث المباشرة',
   runSubtitle: 'تابع كل خيار وخطوة لحظة بلحظة.',
-  queued: 'في قائمة الانتظار',
-  running: 'قيد التشغيل',
+  clarifying: 'مطلوب توضيح',
+  discovering: 'جارٍ اكتشاف التجار',
+  awaitingDomainApproval: 'في انتظار الموافقة على التجار',
+  comparing: 'جارٍ مقارنة العروض',
+  awaitingAddressConsent: 'في انتظار موافقة مشاركة العنوان',
+  awaitingSeatHoldApproval: 'في انتظار موافقة حجز المقاعد مؤقتاً',
+  couponTesting: 'جارٍ اختبار الكوبونات',
+  readyForHandoff: 'جاهز لاستلام التحكم',
+  userTakeover: 'التحكم البشري نشط',
   paused: 'متوقف مؤقتاً',
   completed: 'مكتمل',
   cancelled: 'ملغى',
@@ -364,14 +412,22 @@ const ar: Record<keyof typeof en, string> = {
   partialResults: 'نتائج جزئية',
   screenshots: 'لقطات الشاشة',
   approvals: 'موافقتك مطلوبة',
+  clarificationRequired: 'يحتاج ديل بايلوت إلى توضيح',
+  submitAnswers: 'إرسال الإجابات',
   merchantApproval: 'الموافقة على التاجر',
-  merchantApprovalBody: 'وافق قبل أن يتابع ديل بايلوت مع هذا التاجر.',
+  merchantApprovalBody:
+    'اختر نطاقات التجار المصريين المحددة التي يمكن لديل بايلوت زيارتها.',
+  approveSelected: 'الموافقة على النطاقات المختارة',
   addressConsent: 'الموافقة على مشاركة العنوان',
   addressConsentPrefix: 'هذا التاجر فقط سيستلم عنوانك المحفوظ:',
   addressConsentBody:
     'لا يُحمّل العنوان إلا بعد موافقتك، وتُمسح نسخته المؤقتة بعد الإرسال.',
+  addressFieldsShared: 'الحقول المطلوبة',
+  shareAddress: 'مشاركة العنوان مع هؤلاء التجار',
   seatHoldApproval: 'الموافقة على حجز المقاعد مؤقتاً',
   seatHoldBody: 'وافق على حجز المقاعد المؤقت قبل انتهاء المهلة.',
+  seatHoldDuration: 'مدة الحجز المتوقعة',
+  approveSeatHold: 'الموافقة على حجز المقاعد',
   approve: 'موافقة',
   decline: 'رفض',
   approving: 'جارٍ الإرسال…',
@@ -386,6 +442,7 @@ const ar: Record<keyof typeof en, string> = {
   remoteViewerSubtitle:
     'للمشاهدة فقط أثناء عمل ديل بايلوت. استلم التحكم عندما يطلب المساعد تدخلك.',
   viewerUnavailable: 'سيظهر المتصفح البعيد عندما يفتح المساعد أحد المتاجر.',
+  viewerLoadFailed: 'تعذر تحميل المتصفح البعيد حتى الآن.',
   takeOver: 'استلام التحكم',
   takingOver: 'جارٍ طلب التحكم…',
   releaseControl: 'إعادة التحكم إلى ديل بايلوت',
@@ -393,6 +450,8 @@ const ar: Record<keyof typeof en, string> = {
   viewOnly: 'للمشاهدة فقط · المساعد يعمل',
   controlFailed: 'تعذر الحصول على رمز التحكم. حاول مرة أخرى.',
   releaseFailed: 'تعذر إعادة التحكم. حاول مرة أخرى.',
+  controlLeaseExpired:
+    'انتهت مهلة التحكم بالمتصفح. تم تعطيل الإدخال ويستعيد ديل بايلوت الحالة بأمان.',
   paymentWarningTitle: 'الدفع يدوياً فقط',
   paymentWarning:
     'لا ترسل بيانات البطاقة أو رمز OTP أو PIN أو أكواد المحفظة إلى ديل بايلوت. أدخل بيانات الدفع بنفسك فقط أثناء تحكمك.',
@@ -400,16 +459,39 @@ const ar: Record<keyof typeof en, string> = {
   reportSubtitle: 'تُقارن الإجماليات فقط بعد التحقق من كل الرسوم المطلوبة.',
   lowestVerified: 'أقل إجمالي موثّق بين الخيارات المفحوصة',
   noVerifiedTotal: 'لا يوجد بعد خيار مفحوص بإجمالي موثّق بالكامل.',
+  reportInProgress: 'لا يزال تقرير المقارنة قيد التحقق.',
+  merchantProgress: 'تقدم التجار',
+  offers: 'العروض',
+  noOffers: 'لم يتم تسجيل أي عروض بعد.',
+  valid: 'عرض صالح',
+  excluded: 'عرض مستبعد',
+  incomplete: 'عرض غير مكتمل',
   subtotal: 'العناصر',
   delivery: 'التوصيل',
   serviceFee: 'رسوم الخدمة',
+  bookingFee: 'رسوم الحجز',
   taxes: 'الضرائب',
   discount: 'الخصم',
   total: 'الإجمالي الموثّق',
+  optionalTip: 'الإكرامية الاختيارية',
+  exclusionReason: 'سبب الاستبعاد',
+  unknownReason: 'لم يتم تقديم سبب.',
+  match: 'المطابقة',
+  exactMatch: 'مطابقة تامة',
+  notExact: 'غير مطابق تماماً',
   incompleteReason: 'سبب عدم الاكتمال',
   completeReason: 'لا يوجد — الإجمالي موثّق',
   unavailableReason: 'لم يُرجع التاجر خياراً مكتملاً.',
   verifiedAt: 'تم التحقق',
+  couponAttempts: 'محاولات الكوبون',
+  partialFailures: 'الإخفاقات الجزئية',
+  retryable: 'يمكن إعادة المحاولة',
+  notRetryable: 'لا يمكن إعادة المحاولة',
+  evidence: 'الأدلة',
+  redactedEvidence: 'منقّح',
+  failure: 'فشل المهمة',
+  handoffReady: 'جلسة متصفح التاجر نفسها متوقفة وجاهزة لاستلامك التحكم يدوياً.',
+  finishSession: 'إنهاء الجلسة اليدوية',
   rating: 'التقييم',
   showtime: 'موعد العرض',
   venue: 'السينما',
@@ -418,8 +500,8 @@ const ar: Record<keyof typeof en, string> = {
   close: 'إغلاق',
 };
 
-export const messages = { en, ar } as const;
-export const defaultLocale: AppLocale = 'en';
+export const messages = { 'en-EG': en, 'ar-EG': ar } as const;
+export const defaultLocale: AppLocale = 'en-EG';
 export type MessageKey = keyof typeof en;
 
 interface LocalizationContextValue {
@@ -441,9 +523,10 @@ export function LocalizationProvider({ children }: PropsWithChildren) {
     storage
       .get(STORAGE_KEYS.locale)
       .then((savedLocale) => {
-        if (savedLocale === 'en' || savedLocale === 'ar') {
+        if (savedLocale === 'en-EG' || savedLocale === 'ar-EG')
           setLocaleState(savedLocale);
-        }
+        else if (savedLocale === 'en') setLocaleState('en-EG');
+        else if (savedLocale === 'ar') setLocaleState('ar-EG');
       })
       .catch(() => undefined);
   }, []);
@@ -452,7 +535,7 @@ export function LocalizationProvider({ children }: PropsWithChildren) {
     void storage.set(STORAGE_KEYS.locale, nextLocale).catch(() => undefined);
   }, []);
   const value = useMemo<LocalizationContextValue>(() => {
-    const isRTL = locale === 'ar';
+    const isRTL = locale === 'ar-EG';
     return {
       locale,
       isRTL,

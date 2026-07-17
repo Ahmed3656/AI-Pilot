@@ -1,42 +1,136 @@
+import { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { AppButton, Card } from '@/components';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useLocalization } from '@/localization';
-import { RunApproval } from '../types';
+import { PendingAction } from '../types';
+import { ChoiceChip, LabelledInput } from './ShoppingControls';
+
+interface ApprovalCardProps {
+  action: Exclude<PendingAction, { type: 'handoff' }>;
+  busy: boolean;
+  onClarification: (answers: Record<string, string>) => void;
+  onDomains: (domains: string[]) => void;
+  onAddress: () => void;
+  onSeatHold: () => void;
+}
 
 export function ApprovalCard({
-  approval,
+  action,
   busy,
-  onDecision,
-}: {
-  approval: RunApproval;
-  busy: boolean;
-  onDecision: (decision: 'approved' | 'declined') => void;
-}) {
+  onClarification,
+  onDomains,
+  onAddress,
+  onSeatHold,
+}: ApprovalCardProps) {
   const { theme } = useTheme();
-  const { t, textDirection, rowDirection, locale } = useLocalization();
-  const title =
-    approval.type === 'address_share'
-      ? t('addressConsent')
-      : approval.type === 'seat_hold'
-        ? t('seatHoldApproval')
-        : t('merchantApproval');
-  const body =
-    approval.type === 'address_share'
-      ? t('addressConsentBody')
-      : approval.type === 'seat_hold'
-        ? t('seatHoldBody')
-        : t('merchantApprovalBody');
-  const merchant = approval.merchant.branch
-    ? `${approval.merchant.name} · ${approval.merchant.branch}`
-    : approval.merchant.name;
+  const { t, textDirection, rowDirection } = useLocalization();
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
 
-  return (
-    <Card>
-      <Text style={[styles.title, textDirection, { color: theme.colors.text }]}>
-        {title}
-      </Text>
-      {approval.type === 'address_share' ? (
+  useEffect(() => {
+    setAnswers({});
+    setSelectedDomains([]);
+  }, [action.requestId]);
+
+  const missingRequiredAnswer = useMemo(
+    () =>
+      action.type === 'clarification' &&
+      action.questions.some(
+        (question) => question.required && !answers[question.id]?.trim(),
+      ),
+    [action, answers],
+  );
+
+  if (action.type === 'clarification') {
+    return (
+      <Card>
+        <Text
+          style={[styles.title, textDirection, { color: theme.colors.text }]}
+        >
+          {t('clarificationRequired')}
+        </Text>
+        <View style={styles.fields}>
+          {action.questions.map((question) => (
+            <LabelledInput
+              key={question.id}
+              label={`${question.prompt}${question.required ? ' *' : ''}`}
+              onChangeText={(value) =>
+                setAnswers((current) => ({
+                  ...current,
+                  [question.id]: value,
+                }))
+              }
+              value={answers[question.id] ?? ''}
+            />
+          ))}
+        </View>
+        <AppButton
+          disabled={busy || missingRequiredAnswer}
+          label={t(busy ? 'approving' : 'submitAnswers')}
+          onPress={() =>
+            onClarification(
+              Object.fromEntries(
+                Object.entries(answers)
+                  .map(([key, value]) => [key, value.trim()])
+                  .filter(([, value]) => Boolean(value)),
+              ),
+            )
+          }
+        />
+      </Card>
+    );
+  }
+
+  if (action.type === 'domain_approval') {
+    return (
+      <Card>
+        <Text
+          style={[styles.title, textDirection, { color: theme.colors.text }]}
+        >
+          {t('merchantApproval')}
+        </Text>
+        <Text
+          style={[styles.body, textDirection, { color: theme.colors.muted }]}
+        >
+          {t('merchantApprovalBody')}
+        </Text>
+        <View style={[styles.chips, rowDirection]}>
+          {action.candidates.map((merchant) => {
+            const selected = selectedDomains.includes(merchant.domain);
+            return (
+              <ChoiceChip
+                key={merchant.id}
+                label={`${merchant.name} · ${merchant.domain}`}
+                onPress={() =>
+                  setSelectedDomains((current) =>
+                    selected
+                      ? current.filter((domain) => domain !== merchant.domain)
+                      : [...current, merchant.domain],
+                  )
+                }
+                selected={selected}
+              />
+            );
+          })}
+        </View>
+        <AppButton
+          disabled={busy || selectedDomains.length === 0}
+          label={t(busy ? 'approving' : 'approveSelected')}
+          onPress={() => onDomains(selectedDomains)}
+        />
+      </Card>
+    );
+  }
+
+  if (action.type === 'address_consent') {
+    return (
+      <Card>
+        <Text
+          style={[styles.title, textDirection, { color: theme.colors.text }]}
+        >
+          {t('addressConsent')}
+        </Text>
         <Text
           style={[
             styles.consentPrefix,
@@ -46,72 +140,71 @@ export function ApprovalCard({
         >
           {t('addressConsentPrefix')}
         </Text>
-      ) : null}
-      <View style={[styles.merchant, { borderColor: theme.colors.primary }]}>
-        <Text
-          style={[
-            styles.merchantName,
-            textDirection,
-            { color: theme.colors.primary },
-          ]}
-        >
-          {merchant}
-        </Text>
-      </View>
-      <Text style={[styles.body, textDirection, { color: theme.colors.muted }]}>
-        {approval.summary ?? body}
-      </Text>
-      {approval.type === 'address_share' && approval.summary ? (
+        {action.merchantDomains.map((domain) => (
+          <Text
+            key={domain}
+            style={[
+              styles.domain,
+              textDirection,
+              { color: theme.colors.primary },
+            ]}
+          >
+            {domain}
+          </Text>
+        ))}
         <Text
           style={[styles.body, textDirection, { color: theme.colors.muted }]}
         >
-          {body}
+          {t('addressFieldsShared')}: {action.fields.join(', ')}
         </Text>
-      ) : null}
-      {approval.expiresAt ? (
         <Text
-          style={[
-            styles.expires,
-            textDirection,
-            { color: theme.colors.warning },
-          ]}
+          style={[styles.body, textDirection, { color: theme.colors.muted }]}
         >
-          {new Intl.DateTimeFormat(locale === 'ar' ? 'ar-EG' : 'en-EG', {
-            dateStyle: 'medium',
-            timeStyle: 'short',
-          }).format(new Date(approval.expiresAt))}
+          {t('addressConsentBody')}
+        </Text>
+        <AppButton
+          disabled={busy}
+          label={t(busy ? 'approving' : 'shareAddress')}
+          onPress={onAddress}
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <Text style={[styles.title, textDirection, { color: theme.colors.text }]}>
+        {t('seatHoldApproval')}
+      </Text>
+      <Text
+        style={[styles.domain, textDirection, { color: theme.colors.primary }]}
+      >
+        {action.merchantDomain}
+      </Text>
+      <Text style={[styles.body, textDirection, { color: theme.colors.muted }]}>
+        {t('seatHoldBody')}
+      </Text>
+      {action.holdDurationSeconds ? (
+        <Text
+          style={[styles.body, textDirection, { color: theme.colors.warning }]}
+        >
+          {t('seatHoldDuration')}: {action.holdDurationSeconds}s
         </Text>
       ) : null}
-      <View style={[styles.actions, rowDirection]}>
-        <AppButton
-          disabled={busy}
-          label={t(busy ? 'approving' : 'approve')}
-          onPress={() => onDecision('approved')}
-          style={styles.action}
-        />
-        <AppButton
-          disabled={busy}
-          label={t('decline')}
-          onPress={() => onDecision('declined')}
-          style={styles.action}
-          variant="secondary"
-        />
-      </View>
+      <AppButton
+        disabled={busy}
+        label={t(busy ? 'approving' : 'approveSeatHold')}
+        onPress={onSeatHold}
+      />
     </Card>
   );
 }
 
 const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: '800' },
-  consentPrefix: { fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  merchant: {
-    borderStartWidth: 3,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  merchantName: { fontSize: 17, fontWeight: '900' },
   body: { fontSize: 14, lineHeight: 20 },
-  expires: { fontSize: 13, fontWeight: '700' },
-  actions: { gap: 10, marginTop: 4 },
-  action: { flex: 1 },
+  fields: { gap: 12 },
+  chips: { flexWrap: 'wrap', gap: 8 },
+  consentPrefix: { fontSize: 14, lineHeight: 20, fontWeight: '800' },
+  domain: { fontSize: 15, lineHeight: 21, fontWeight: '900' },
 });

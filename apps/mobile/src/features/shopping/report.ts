@@ -1,63 +1,28 @@
-import { ShoppingCandidate, ShoppingCategory, ShoppingReport } from './types';
+import { OfferReport, RunReport } from './types';
 
-const requiredMerchants: Record<ShoppingCategory, string[]> = {
-  retail: ['Amazon', 'Jumia', 'Noon'],
-  food: ['Talabat'],
-  cinema: ['VOX'],
-};
-
-function unavailableCandidate(
-  category: ShoppingCategory,
-  merchant: string,
-): ShoppingCandidate {
-  return {
-    id: `unavailable-${category}-${merchant.toLowerCase()}`,
-    category,
-    merchant,
-    title: merchant,
-    breakdown: {
-      subtotal: null,
-      delivery: null,
-      serviceFee: null,
-      taxes: null,
-      discount: null,
-      total: null,
-    },
-    isComplete: false,
-    incompleteReason: null,
-    verifiedAt: null,
-  };
+export interface PresentedOffer {
+  offer: OfferReport;
+  validity: 'valid' | 'excluded' | 'incomplete';
+  isWinner: boolean;
 }
 
-export function withPhaseOneMerchants(
-  report: ShoppingReport,
-): ShoppingCandidate[] {
-  const candidates = report.candidates.filter(
-    (candidate) => candidate.category === report.category,
-  );
-  const placeholders = requiredMerchants[report.category]
-    .filter(
-      (merchant) =>
-        !candidates.some((candidate) =>
-          candidate.merchant
-            .toLocaleLowerCase()
-            .includes(merchant.toLowerCase()),
-        ),
-    )
-    .map((merchant) => unavailableCandidate(report.category, merchant));
-  return [...candidates, ...placeholders];
-}
-
-export function lowestVerifiedTotal(
-  candidates: ShoppingCandidate[],
-): number | null {
-  const verified = candidates
-    .filter(
-      (candidate) =>
-        candidate.isComplete &&
-        candidate.verifiedAt !== null &&
-        candidate.breakdown.total !== null,
-    )
-    .map((candidate) => candidate.breakdown.total as number);
-  return verified.length > 0 ? Math.min(...verified) : null;
+export function presentOffers(report: RunReport): PresentedOffer[] {
+  const winnerId = report.conclusion?.winnerOfferId ?? null;
+  return [
+    ...report.validOffers.map((offer) => ({
+      offer,
+      validity: 'valid' as const,
+      isWinner: offer.id === winnerId,
+    })),
+    ...report.incompleteOffers.map((offer) => ({
+      offer,
+      validity: 'incomplete' as const,
+      isWinner: false,
+    })),
+    ...report.excludedOffers.map((offer) => ({
+      offer,
+      validity: 'excluded' as const,
+      isWinner: false,
+    })),
+  ];
 }

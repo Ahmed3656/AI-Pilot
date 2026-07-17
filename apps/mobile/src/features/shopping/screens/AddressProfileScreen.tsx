@@ -30,7 +30,7 @@ const fields: {
     autoComplete: 'tel',
   },
   { key: 'governorate', label: 'governorate' },
-  { key: 'cityArea', label: 'cityArea' },
+  { key: 'cityOrArea', label: 'cityOrArea' },
   {
     key: 'street',
     label: 'street',
