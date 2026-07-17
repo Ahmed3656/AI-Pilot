@@ -46,4 +46,19 @@ describe('environment validation', () => {
       }),
     ).toThrow('must be distinct');
   });
+
+  it.each([
+    'INTERNAL_SERVICE_TOKEN',
+    'AI_INTERNAL_SERVICE_TOKEN',
+    'AI_NEST_API_INTERNAL_URL',
+    'VIEWER_AUTH_SHARED_SECRET',
+    'COUNTRY',
+    'MARKET',
+    'CURRENCY',
+    'TIMEZONE',
+  ])('rejects obsolete or configurable fixed-scope variable %s', (key) => {
+    expect(() =>
+      validateEnvironment({ ...productionEnvironment, [key]: 'obsolete' }),
+    ).toThrow(key);
+  });
 });

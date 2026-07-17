@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -76,11 +77,17 @@ class ControlAPIClient:
             "timestamp": _timestamp(),
             "payload": payload,
         }
-        response = await self.client.post(
-            f"{self.base_url}/internal/v1/ai-events",
-            headers=self._headers,
-            json=body,
-        )
+        response: httpx.Response | None = None
+        for attempt in range(5):
+            response = await self.client.post(
+                f"{self.base_url}/internal/v1/ai-events",
+                headers=self._headers,
+                json=body,
+            )
+            if response.status_code not in {404, 409, 502, 503}:
+                break
+            await asyncio.sleep(0.05 * (2**attempt))
+        assert response is not None
         response.raise_for_status()
         return identifier
 

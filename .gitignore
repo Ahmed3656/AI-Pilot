@@ -16,3 +16,4 @@ __pycache__/
 venv/
 build/
 *.egg-info/
+infra/phase1/.demo-state.json

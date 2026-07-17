@@ -17,7 +17,7 @@ def test_health_endpoints() -> None:
 def test_production_readiness_fails_without_live_secrets(monkeypatch: MonkeyPatch) -> None:
     settings = app.state.settings
     monkeypatch.setattr(settings, "environment", "production")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "openrouter_api_key", "")
     monkeypatch.setattr(settings, "internal_token", "")
 
     response = client.get("/health/ready")

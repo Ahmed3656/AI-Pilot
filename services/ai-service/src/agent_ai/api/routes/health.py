@@ -31,7 +31,7 @@ def liveness() -> HealthResponse:
 def readiness(request: Request) -> HealthResponse:
     settings = request.app.state.settings
     if settings.environment == "production" and (
-        not settings.openai_api_key
+        not settings.openrouter_api_key
         or not settings.internal_token
         or not settings.control_api_url
         or not settings.selenium_remote_url

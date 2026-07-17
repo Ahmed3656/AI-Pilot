@@ -1,5 +1,6 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { ulid } from 'ulid';
 import { ContractException } from '../../core/filters/contract-exception';
 import {
@@ -47,6 +48,7 @@ import {
 export class ShoppingService implements OnModuleDestroy {
   private readonly browserTtlSeconds: number;
   private readonly leaseTtlSeconds: number;
+  private readonly publicOrigin: string;
   private readonly leaseTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
@@ -67,6 +69,9 @@ export class ShoppingService implements OnModuleDestroy {
       'shopping.controlLeaseTtlSeconds',
       120,
     );
+    this.publicOrigin = config
+      .get<string>('shopping.publicOrigin', 'http://localhost:8080')
+      .replace(/\/$/, '');
   }
 
   onModuleDestroy(): void {
@@ -667,6 +672,44 @@ export class ShoppingService implements OnModuleDestroy {
         );
       }
     }
+    if (dto.type === 'evidence.captured' && dto.payload.merchantAttemptId) {
+      const data = await this.store.report(run.id);
+      if (
+        !data.merchantAttempts.some(
+          (attempt) => attempt.id === dto.payload.merchantAttemptId,
+        )
+      )
+        this.missingEventReference('Merchant attempt');
+    }
+    if (dto.type === 'offer.recorded') {
+      const data = await this.store.report(run.id);
+      if (
+        !data.merchantAttempts.some(
+          (attempt) => attempt.id === dto.payload.merchantAttemptId,
+        )
+      )
+        this.missingEventReference('Merchant attempt');
+      this.assertEvidenceReferences(data.evidence, dto.payload.evidenceIds);
+    }
+    if (dto.type === 'coupon.attempted') {
+      const data = await this.store.report(run.id);
+      if (!data.offers.some((offer) => offer.id === dto.payload.offerId))
+        this.missingEventReference('Offer');
+      this.assertEvidenceReferences(data.evidence, dto.payload.evidenceIds);
+      const kinds = new Set(
+        data.evidence
+          .filter((item) =>
+            (dto.payload.evidenceIds as string[]).includes(item.id),
+          )
+          .map((item) => item.kind),
+      );
+      if (!kinds.has('coupon_source') || !kinds.has('coupon_result'))
+        throw new ContractException(
+          'VALIDATION_ERROR',
+          400,
+          'Coupon evidence must include source and result artifacts',
+        );
+    }
   }
 
   private async applyAiEvent(run: ShoppingRun, dto: AiEventDto): Promise<void> {
@@ -744,6 +787,88 @@ export class ShoppingService implements OnModuleDestroy {
         attempt.evidenceIds = dto.payload.evidenceIds as string[];
         attempt.finishedAt = new Date(dto.timestamp);
         await this.store.saveMerchantAttempt(attempt);
+        break;
+      }
+      case 'evidence.captured':
+        await this.store.saveEvidence({
+          id: String(dto.payload.evidenceId),
+          runId: run.id,
+          kind: String(dto.payload.kind),
+          uri: `${this.publicOrigin}/api/v1/shopping/runs/${encodeURIComponent(run.id)}/report#${encodeURIComponent(String(dto.payload.evidenceId))}`,
+          sha256: createHash('sha256')
+            .update(`${run.id}:${String(dto.payload.evidenceId)}`)
+            .digest('hex'),
+          capturedAt: new Date(dto.timestamp),
+          merchantAttemptId: dto.payload.merchantAttemptId as string | null,
+          redacted: true,
+        });
+        break;
+      case 'offer.recorded': {
+        const data = await this.store.report(run.id);
+        const attempt = data.merchantAttempts.find(
+          (candidate) => candidate.id === dto.payload.merchantAttemptId,
+        );
+        if (!attempt) break;
+        const incomingValidity = String(dto.payload.validity);
+        await this.store.saveOffer({
+          id: String(dto.payload.offerId),
+          runId: run.id,
+          merchantAttemptId: attempt.id,
+          merchantName: attempt.merchantName,
+          merchantDomain: attempt.merchantDomain,
+          category: attempt.category,
+          title: `Offer ${String(dto.payload.offerId)}`,
+          sourceUrl: `https://${attempt.merchantDomain}/`,
+          match: {
+            exact: false,
+            confidence: 0,
+            explanation:
+              'The canonical event confirms discovery but carries no economic detail.',
+          },
+          availability: 'unknown',
+          details: incompleteDetails(attempt.category),
+          price: {
+            itemSubtotal: '0.00',
+            deliveryFee: null,
+            serviceFee: null,
+            bookingFee: null,
+            tax: null,
+            mandatoryFees: [],
+            verifiedDiscount: '0.00',
+            optionalTip:
+              attempt.category === ShoppingCategory.Food ? '0.00' : null,
+            finalTotal: null,
+          },
+          validity: incomingValidity === 'excluded' ? 'excluded' : 'incomplete',
+          observedAt: new Date(dto.timestamp),
+          evidenceIds: dto.payload.evidenceIds as string[],
+          exclusionReason:
+            incomingValidity === 'excluded'
+              ? 'The AI classified this offer outside the comparison scope.'
+              : null,
+          incompleteFields: ['economicDetails'],
+        });
+        break;
+      }
+      case 'coupon.attempted': {
+        const offer = await this.store.findOffer(String(dto.payload.offerId));
+        if (!offer) break;
+        await this.store.saveCouponAttempt({
+          id: String(dto.payload.couponAttemptId),
+          runId: run.id,
+          offerId: offer.id,
+          merchantDomain: offer.merchantDomain,
+          code: '[not supplied by event]',
+          sourceUrl: `https://${offer.merchantDomain}/`,
+          status: String(dto.payload.status),
+          beforeTotal: '0.00',
+          afterTotal: null,
+          verifiedDiscount: '0.00',
+          rejectionReason: dto.payload.rejectionReason as string | null,
+          message: 'Coupon economics were not included in the event envelope.',
+          attemptedAt: new Date(dto.timestamp),
+          evidenceIds: dto.payload.evidenceIds as string[],
+        });
         break;
       }
       case 'run.failed':
@@ -879,6 +1004,23 @@ export class ShoppingService implements OnModuleDestroy {
         403,
         'Domain access is not approved',
       );
+  }
+
+  private assertEvidenceReferences(
+    evidence: Array<{ id: string }>,
+    value: unknown,
+  ): void {
+    const known = new Set(evidence.map((item) => item.id));
+    if (!(value as string[]).every((id) => known.has(id)))
+      this.missingEventReference('Evidence');
+  }
+
+  private missingEventReference(kind: string): never {
+    throw new ContractException(
+      'ACTION_REQUEST_NOT_FOUND',
+      404,
+      `${kind} reference was not found for this run`,
+    );
   }
 
   private async ownedLease(
@@ -1422,4 +1564,47 @@ function containsSecretKey(value: unknown): boolean {
         key,
       ) || containsSecretKey(item),
   );
+}
+
+function incompleteDetails(
+  category: ShoppingCategory,
+): Record<string, unknown> {
+  if (category === ShoppingCategory.Retail)
+    return {
+      kind: 'retail',
+      brand: '',
+      model: '',
+      variant: null,
+      storage: null,
+      size: null,
+      color: null,
+      quantity: 1,
+      condition: 'new',
+      deliveryEstimate: null,
+    };
+  if (category === ShoppingCategory.Food)
+    return {
+      kind: 'food',
+      restaurant: '',
+      meal: '',
+      size: null,
+      modifiers: [],
+      rating: null,
+      minimumOrder: null,
+      deliveryEstimate: null,
+      optionalTipExcluded: true,
+    };
+  return {
+    kind: 'cinema',
+    movie: '',
+    venue: '',
+    date: '1970-01-01',
+    showtime: '1970-01-01T00:00:00.000Z',
+    language: '',
+    screenFormat: '',
+    seatCount: 0,
+    adjacentSeats: false,
+    seatType: '',
+    holdExpiresAt: null,
+  };
 }

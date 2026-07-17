@@ -830,13 +830,13 @@ Values listed as required in live environments MUST fail readiness when absent. 
 | `AI_HOST`                    | AI                                   | `0.0.0.0`                                     | no            | no     | Private listen address                                       |
 | `AI_PORT`                    | AI                                   | `8000`                                        | no            | no     | Private listen port                                          |
 | `AI_LOG_LEVEL`               | AI                                   | `INFO`                                        | no            | no     | Structured log level                                         |
-| `AI_MODEL`                   | AI                                   | `gpt-5.6`                                     | no            | no     | Exact Responses API model                                    |
-| `AI_OPENAI_API_KEY`          | AI                                   | none                                          | live AI       | yes    | Never exposed to API, mobile, Caddy, screenshots, or reports |
+| `AI_MODEL`                   | AI                                   | `openai/gpt-5.2`                              | no            | no     | Exact OpenRouter Responses model                             |
+| `AI_OPENROUTER_API_KEY`      | AI                                   | none                                          | live AI       | yes    | Never exposed to API, mobile, Caddy, screenshots, or reports |
 | `AI_SELENIUM_REMOTE_URL`     | AI                                   | `http://browser:4444/wd/hub`                  | live          | no     | Private WebDriver URL                                        |
 | `AI_CONTROL_API_URL`         | AI                                   | `http://api:3000`                             | live          | no     | Private API origin; internal paths appended                  |
 | `AI_INTERNAL_TOKEN`          | AI                                   | none                                          | live          | yes    | Compose maps from the same `INTERNAL_TOKEN` value            |
 | `AI_MAX_COMPUTER_STEPS`      | AI                                   | `80`                                          | no            | no     | Integer 1..200                                               |
-| `AI_REQUEST_TIMEOUT_SECONDS` | AI                                   | `30`                                          | no            | no     | Internal/OpenAI request timeout, 1..120                      |
+| `AI_REQUEST_TIMEOUT_SECONDS` | AI                                   | `30`                                          | no            | no     | Internal/OpenRouter request timeout, 1..120                  |
 | `EXPO_PUBLIC_API_URL`        | mobile                               | local `http://localhost:8080`                 | build         | no     | Origin only; client appends `/api/v1`                        |
 | `EXPO_PUBLIC_AUTH_REQUIRED`  | mobile                               | `true`                                        | no            | no     | Must be `true` for any live/shared demo                      |
 | `COMPOSE_PROJECT_NAME`       | Compose                              | `dealpilot-phase1`                            | no            | no     | Resource namespace                                           |
@@ -856,7 +856,7 @@ Values listed as required in live environments MUST fail readiness when absent. 
 | `SE_NODE_SESSION_TIMEOUT`    | Selenium                             | `3600`                                        | no            | no     | Equal to browser TTL; must not expire at handoff             |
 | `SE_SESSION_REQUEST_TIMEOUT` | Selenium                             | `30`                                          | no            | no     | New-session request timeout                                  |
 
-Compose sets `TZ=Africa/Cairo` as a fixed literal on API, AI, Caddy, and Selenium; it is not user-configurable. Compose also fixes `SE_SCREEN_WIDTH=1280`, `SE_SCREEN_HEIGHT=800`, VNC enabled, extensions disabled, and WebDriver/noVNC ports internal-only. There are no `COUNTRY`, `MARKET`, `CURRENCY`, or configurable application timezone variables. Deprecated names such as `INTERNAL_SERVICE_TOKEN`, `AI_INTERNAL_SERVICE_TOKEN`, `AI_NEST_API_INTERNAL_URL`, and `VIEWER_AUTH_SHARED_SECRET` are not accepted.
+Compose sets `TZ=Africa/Cairo` as a fixed literal on API, AI, Caddy, and Selenium; it is not user-configurable. Compose also fixes `SE_SCREEN_WIDTH=1280`, `SE_SCREEN_HEIGHT=800`, VNC enabled, extensions disabled, and WebDriver/noVNC ports internal-only. There are no `COUNTRY`, `MARKET`, `CURRENCY`, or configurable application timezone variables. Deprecated names such as `AI_OPENAI_API_KEY`, `INTERNAL_SERVICE_TOKEN`, `AI_INTERNAL_SERVICE_TOKEN`, `AI_NEST_API_INTERNAL_URL`, and `VIEWER_AUTH_SHARED_SECRET` are not accepted.
 
 ## 11. Security and safety rules
 

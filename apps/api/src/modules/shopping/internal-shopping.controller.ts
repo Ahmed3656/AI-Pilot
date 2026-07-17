@@ -5,10 +5,12 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Res,
   UseGuards,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
 import { Public } from '../../core/decorators/public.decorator';
 import { ContractException } from '../../core/filters/contract-exception';
 import { AiEventDto, ResolveSecretDto } from './dto';
@@ -40,7 +42,10 @@ export class InternalShoppingController {
   @ApiOperation({
     summary: 'Authorize a bearer viewer token without accepting URL tokens',
   })
-  authorizeViewer(@Headers('authorization') authorization: string | undefined) {
+  async authorizeViewer(
+    @Headers('authorization') authorization: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
     const match = /^Bearer (\S+)$/.exec(authorization ?? '');
     if (!match)
       throw new ContractException(
@@ -48,6 +53,8 @@ export class InternalShoppingController {
         401,
         'Viewer bearer token is required',
       );
-    return this.shopping.authorizeViewer(match[1]);
+    const authorizationResult = await this.shopping.authorizeViewer(match[1]);
+    response.setHeader('X-DealPilot-Viewer-Mode', authorizationResult.mode);
+    return authorizationResult;
   }
 }

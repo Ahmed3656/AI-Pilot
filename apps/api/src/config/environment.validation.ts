@@ -55,6 +55,21 @@ class EnvironmentVariables {
 }
 
 export function validateEnvironment(config: Record<string, unknown>) {
+  const deprecatedVariables = [
+    'INTERNAL_SERVICE_TOKEN',
+    'AI_INTERNAL_SERVICE_TOKEN',
+    'AI_NEST_API_INTERNAL_URL',
+    'VIEWER_AUTH_SHARED_SECRET',
+    'COUNTRY',
+    'MARKET',
+    'CURRENCY',
+    'TIMEZONE',
+  ].filter((key) => config[key] !== undefined);
+  if (deprecatedVariables.length) {
+    throw new Error(
+      `Unsupported environment variables: ${deprecatedVariables.join(', ')}`,
+    );
+  }
   const numeric = (key: string, fallback: number) =>
     Number(config[key] ?? fallback);
   const nodeEnv = config.NODE_ENV ?? NodeEnvironment.Development;
@@ -106,12 +121,21 @@ export function validateEnvironment(config: Record<string, unknown>) {
       'VIEWER_TOKEN_SECRET',
       'DEALPILOT_PUBLIC_ORIGIN',
     ] as const;
-    const missing = required.filter((key) => !config[key]);
-    if (!validated.DATABASE_ENABLED) missing.push('DATABASE_URL');
+    const missing: string[] = required.filter((key) => !config[key]);
+    if (!validated.DATABASE_ENABLED) missing.push('DATABASE_ENABLED');
     if (missing.length)
       throw new Error(
         `Live API configuration is incomplete: ${[...new Set(missing)].join(', ')}`,
       );
   }
+  const secrets = [
+    validated.JWT_SECRET,
+    validated.INTERNAL_TOKEN,
+    validated.VIEWER_TOKEN_SECRET,
+  ].filter((value): value is string => Boolean(value));
+  if (new Set(secrets).size !== secrets.length)
+    throw new Error(
+      'JWT_SECRET, INTERNAL_TOKEN, and VIEWER_TOKEN_SECRET must be distinct',
+    );
   return normalized;
 }

@@ -28,7 +28,8 @@ from agent_ai.models import (
 )
 from agent_ai.orchestrator.classification import clarification_message, classify_request
 from agent_ai.orchestrator.control_client import ControlAPIClient
-from agent_ai.providers.openai_responses import OpenAIComputerAgent
+from agent_ai.providers.deterministic_test import DeterministicProviderTestAdapter
+from agent_ai.providers.openrouter_responses import OpenRouterComputerAgent
 from agent_ai.schemas.runs import (
     CommandName,
     InternalCommandRequest,
@@ -40,7 +41,7 @@ from agent_ai.workflows import validate_agent_result
 
 
 class ComputerAgent(Protocol):
-    previous_response_id: str | None
+    last_response_id: str | None
 
     async def run(
         self,
@@ -143,6 +144,13 @@ _MERCHANT_NAMES = {
     "talabat.com": "Talabat Egypt",
     "voxcinemas.com": "VOX Egypt",
 }
+_MERCHANT_IDS = {
+    "amazon.eg": "amazon-eg",
+    "jumia.com.eg": "jumia-eg",
+    "noon.com": "noon-eg",
+    "talabat.com": "talabat-eg",
+    "voxcinemas.com": "vox-eg",
+}
 
 _ADDRESS_FIELDS = {
     "recipientName",
@@ -226,12 +234,15 @@ class RunManager:
         self._active_run_id: str | None = None
 
     def _default_agent(self) -> ComputerAgent:
-        if not self.settings.openai_api_key:
-            raise RuntimeError("AI_OPENAI_API_KEY is not configured")
-        return OpenAIComputerAgent(
-            api_key=self.settings.openai_api_key,
+        if self.settings.environment == "test":
+            return DeterministicProviderTestAdapter()
+        if not self.settings.openrouter_api_key:
+            raise RuntimeError("AI_OPENROUTER_API_KEY is not configured")
+        return OpenRouterComputerAgent(
+            api_key=self.settings.openrouter_api_key,
             model=self.settings.model,
             max_steps=self.settings.max_computer_steps,
+            timeout_seconds=self.settings.request_timeout_seconds,
         )
 
     async def create_run(
@@ -540,13 +551,13 @@ class RunManager:
             )
             await self._emit_final_discoveries(record)
             await self._complete_attempts(record)
-            record.status = RunStatus.READY_FOR_HANDOFF
             await self.control.emit(
                 record.run_id,
                 "report.updated",
                 _report_counts(record),
-                status=RunStatus.READY_FOR_HANDOFF,
+                status=record.status,
             )
+            await self._transition(record, RunStatus.READY_FOR_HANDOFF)
         except asyncio.CancelledError:
             if record.status not in TERMINAL_STATUSES:
                 raise
@@ -568,7 +579,6 @@ class RunManager:
                     "coupon_attempts": record.partial_coupons,
                     "partial": True,
                 }
-                record.status = RunStatus.READY_FOR_HANDOFF
                 await self.control.emit(
                     record.run_id,
                     "run.warning",
@@ -578,14 +588,15 @@ class RunManager:
                         "merchantAttemptId": None,
                         "evidenceIds": [],
                     },
-                    status=RunStatus.READY_FOR_HANDOFF,
+                    status=record.status,
                 )
                 await self.control.emit(
                     record.run_id,
                     "report.updated",
                     _report_counts(record),
-                    status=RunStatus.READY_FOR_HANDOFF,
+                    status=record.status,
                 )
+                await self._transition(record, RunStatus.READY_FOR_HANDOFF)
             else:
                 await self._fail(record, "AI_RUN_FAILED", retryable=True)
 
@@ -595,7 +606,7 @@ class RunManager:
         record.status = RunStatus.AWAITING_DOMAIN_APPROVAL
         candidates = [
             {
-                "id": f"merchant:{domain}",
+                "id": _MERCHANT_IDS[domain],
                 "name": _MERCHANT_NAMES[domain],
                 "domain": domain,
                 "category": record.category.value,
@@ -613,6 +624,7 @@ class RunManager:
 
     async def _open_approved_merchants(self, record: RunRecord) -> None:
         assert record.category is not None
+        fixture_loaded = False
         for domain in ALLOWED_DOMAINS[record.category]:
             if domain not in record.approved_domains:
                 continue
@@ -623,12 +635,40 @@ class RunManager:
                 "merchant.attempt_started",
                 {
                     "attemptId": attempt.id,
-                    "merchantId": f"merchant:{domain}",
+                    "merchantId": _MERCHANT_IDS[domain],
                     "merchantDomain": domain,
                     "category": record.category.value,
                 },
                 status=RunStatus.COMPARING,
             )
+            if self.settings.environment == "test":
+                if not fixture_loaded:
+                    await asyncio.to_thread(
+                        record.browser.load_deterministic_test_fixture,
+                        domain,
+                        record.category,
+                        record.approved_domains,
+                    )
+                    fixture_loaded = True
+                else:
+                    await self._finish_attempt(
+                        record,
+                        attempt,
+                        "unavailable",
+                        "TEST_MERCHANT_UNAVAILABLE",
+                    )
+                    await self.control.emit(
+                        record.run_id,
+                        "run.warning",
+                        {
+                            "code": "TEST_MERCHANT_UNAVAILABLE",
+                            "message": "Deterministic test adapter simulated a merchant failure.",
+                            "merchantAttemptId": attempt.id,
+                            "evidenceIds": [],
+                        },
+                        status=RunStatus.COMPARING,
+                    )
+                continue
             try:
                 await asyncio.to_thread(
                     record.browser.navigate,
@@ -813,7 +853,7 @@ class RunManager:
         if coupon_id in record.emitted_coupon_ids:
             return
         record.emitted_coupon_ids.add(coupon_id)
-        record.status = RunStatus.COUPON_TESTING
+        await self._transition(record, RunStatus.COUPON_TESTING)
         verified = data.get("verified") is True
         evidence_ids = [str(value) for value in data.get("evidence_ids", [])]
         raw_rejection = str(data.get("rejection_reason", "unknown"))
@@ -835,6 +875,18 @@ class RunManager:
                 "evidenceIds": evidence_ids,
             },
             status=RunStatus.COUPON_TESTING,
+        )
+
+    async def _transition(self, record: RunRecord, status: RunStatus) -> None:
+        if record.status is status:
+            return
+        previous = record.status
+        record.status = status
+        await self.control.emit(
+            record.run_id,
+            "run.status_changed",
+            {"from": previous.value, "to": status.value, "reasonCode": None},
+            status=status,
         )
 
     async def _complete_attempts(self, record: RunRecord, failure_code: str | None = None) -> None:

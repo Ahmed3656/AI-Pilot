@@ -34,7 +34,7 @@
 
 				@authorized status 2xx
 				handle_response @authorized {
-					request_header X-DealPilot-Viewer-Mode {rp.header.X-DealPilot-Viewer-Mode}
+					request_header X-DealPilot-Viewer-Mode {rp.header.X-Dealpilot-Viewer-Mode}
 				}
 			}
 

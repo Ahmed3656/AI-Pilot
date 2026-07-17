@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
-    model: str = "gpt-5.6"
-    openai_api_key: str = ""
+    model: str = "openai/gpt-5.2"
+    openrouter_api_key: str = ""
     selenium_remote_url: str = "http://browser:4444/wd/hub"
     control_api_url: str = "http://api:3000"
     internal_token: str = ""

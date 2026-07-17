@@ -16,6 +16,7 @@ assert.match(
 assert.doesNotMatch(rootCompose, /^services:/m);
 
 for (const deprecated of [
+  'AI_OPENAI_API_KEY',
   'INTERNAL_SERVICE_TOKEN',
   'AI_INTERNAL_SERVICE_TOKEN',
   'AI_NEST_API_INTERNAL_URL',
@@ -41,9 +42,9 @@ assert.match(
   /migrate:\s*\n\s*condition: service_completed_successfully/,
 );
 assert.match(compose, /to_regclass\('public\.shopping_runs'\)/);
-assert.match(compose, /AI_OPENAI_API_KEY/);
+assert.match(compose, /AI_OPENROUTER_API_KEY/);
 assert.equal(
-  (compose.match(/secrets:\s*\n\s*- ai_openai_api_key/g) ?? []).length,
+  (compose.match(/secrets:\s*\n\s*- ai_openrouter_api_key/g) ?? []).length,
   1,
 );
 assert.doesNotMatch(compose, /SE_VNC_VIEW_ONLY/);
@@ -51,6 +52,8 @@ assert.doesNotMatch(compose, /^\s+(?:COUNTRY|MARKET|CURRENCY|TIMEZONE):/m);
 assert.match(compose, /selenium\/standalone-chromium:4\.45\.0-20260606/);
 assert.match(compose, /SE_SCREEN_WIDTH: ['"]1280['"]/);
 assert.match(compose, /SE_SCREEN_HEIGHT: ['"]800['"]/);
+assert.match(compose, /availability['"]\) == ['"]UP['"]/);
+assert.doesNotMatch(compose, /\['value'\]\['ready'\] is True/);
 assert.match(compose, /127\.0\.0\.1:\$\{DEALPILOT_GATEWAY_PORT/);
 assert.equal((compose.match(/^\s+ports:/gm) ?? []).length, 1);
 assert.equal((compose.match(/TZ: Africa\/Cairo/g) ?? []).length, 5);
@@ -64,7 +67,7 @@ for (const required of [
   'INTERNAL_TOKEN',
   'VIEWER_TOKEN_SECRET',
   'DEALPILOT_PUBLIC_ORIGIN',
-  'AI_OPENAI_API_KEY',
+  'AI_OPENROUTER_API_KEY',
   'AI_SELENIUM_REMOTE_URL',
   'AI_CONTROL_API_URL',
   'CADDY_API_UPSTREAM',
@@ -83,6 +86,10 @@ assert.match(caddy, /rewrite \/internal\/v1\/viewer\/authorize/);
 assert.match(caddy, /header_up X-Internal-Token \{\$INTERNAL_TOKEN\}/);
 assert.match(caddy, /\^\/api\/v1\/shopping\/runs\/\[\^\/\]\+\/events\$/);
 assert.match(caddy, /view_only=1/);
+assert.match(
+  caddy,
+  /request_header X-DealPilot-Viewer-Mode \{rp\.header\.X-Dealpilot-Viewer-Mode\}/,
+);
 assert.doesNotMatch(caddy, /\?token=|VIEWER_AUTH_SHARED_SECRET/);
 assert.match(caddy, /header_up -Authorization/);
 assert.match(caddy, /header_up -Cookie/);
@@ -94,5 +101,11 @@ for (const command of ['start', 'stop', 'logs', 'migrate', 'smoke', 'clean']) {
     `mvp:${command} delegates to the canonical runtime`,
   );
 }
+
+assert.equal(packageJson.scripts.start, 'npm run dev:mobile');
+assert.equal(
+  packageJson.scripts['check:docker'],
+  'node scripts/check-docker.mjs',
+);
 
 console.log('Phase 1 infrastructure contract validation passed.');

@@ -1,4 +1,5 @@
-"""Browser boundary placeholder. No browser automation is implemented."""
+"""Selenium browser lifecycle and safety boundary."""
+
 from agent_ai.browser.safety import (
     ALLOWED_DOMAINS,
     PauseRequired,

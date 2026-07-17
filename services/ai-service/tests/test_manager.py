@@ -73,7 +73,7 @@ class FakeBrowser:
 
 
 class FakeAgent:
-    previous_response_id = "response-chain-1"
+    last_response_id = "response-chain-1"
 
     async def run(self, **kwargs: Any) -> str:
         discovery_sink = kwargs["discovery_sink"]
@@ -185,7 +185,7 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     control = FakeControl()
     browser = FakeBrowser()
     manager = RunManager(
-        Settings(internal_token="token", openai_api_key="fake"),
+        Settings(internal_token="token", openrouter_api_key="fake"),
         control,  # type: ignore[arg-type]
         agent_factory=FakeAgent,
         browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]
@@ -197,6 +197,16 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     await manager.start("run-1")
     await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
     record = manager.get_record("run-1")
+    domain_event = next(
+        payload
+        for _, event_type, payload, _ in control.events
+        if event_type == "domains.approval_required"
+    )
+    assert [candidate["id"] for candidate in domain_event["candidates"]] == [
+        "amazon-eg",
+        "jumia-eg",
+        "noon-eg",
+    ]
     await manager.command(
         "run-1",
         _command(
@@ -216,7 +226,19 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     assert browser.urls == ["https://www.amazon.eg/"]
     assert browser.closed is False
     assert browser.session_id == session_id
-    assert record.agent.previous_response_id == "response-chain-1"
+    assert record.agent.last_response_id == "response-chain-1"
+    event_types = [event_type for _, event_type, _, _ in control.events]
+    assert event_types.index("report.updated") < event_types.index("run.status_changed")
+    transition = next(
+        payload
+        for _, event_type, payload, _ in control.events
+        if event_type == "run.status_changed"
+    )
+    assert transition == {
+        "from": "comparing",
+        "to": "ready_for_handoff",
+        "reasonCode": None,
+    }
 
     await manager.command(
         "run-1",
@@ -255,7 +277,7 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
 @pytest.mark.asyncio
 async def test_one_active_run_busy_response_and_idempotent_create() -> None:
     manager = RunManager(
-        Settings(internal_token="token", openai_api_key="fake"),
+        Settings(internal_token="token", openrouter_api_key="fake"),
         FakeControl(),  # type: ignore[arg-type]
         agent_factory=FakeAgent,
         browser_factory=FakeBrowser,  # type: ignore[arg-type]
@@ -283,7 +305,7 @@ async def test_one_active_run_busy_response_and_idempotent_create() -> None:
 async def test_ttl_is_terminal_and_closes_the_only_session() -> None:
     browser = FakeBrowser()
     manager = RunManager(
-        Settings(internal_token="token", openai_api_key="fake"),
+        Settings(internal_token="token", openrouter_api_key="fake"),
         FakeControl(),  # type: ignore[arg-type]
         agent_factory=FakeAgent,
         browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]
@@ -301,7 +323,7 @@ async def test_service_shutdown_transitions_run_to_terminal_before_close() -> No
     browser = FakeBrowser()
     control = FakeControl()
     manager = RunManager(
-        Settings(internal_token="token", openai_api_key="fake"),
+        Settings(internal_token="token", openrouter_api_key="fake"),
         control,  # type: ignore[arg-type]
         agent_factory=FakeAgent,
         browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]
@@ -319,7 +341,7 @@ async def test_service_shutdown_transitions_run_to_terminal_before_close() -> No
 async def test_incremental_coupon_event_values_are_contract_safe() -> None:
     control = FakeControl()
     manager = RunManager(
-        Settings(internal_token="token", openai_api_key="fake"),
+        Settings(internal_token="token", openrouter_api_key="fake"),
         control,  # type: ignore[arg-type]
         agent_factory=FakeAgent,
         browser_factory=FakeBrowser,  # type: ignore[arg-type]
@@ -370,7 +392,7 @@ async def test_failed_clarification_event_can_be_retried_idempotently() -> None:
     request.requested_category = RequestedCategory.AUTO
     control = FlakyControl()
     manager = RunManager(
-        Settings(internal_token="token", openai_api_key="fake"),
+        Settings(internal_token="token", openrouter_api_key="fake"),
         control,  # type: ignore[arg-type]
         agent_factory=FakeAgent,
         browser_factory=FakeBrowser,  # type: ignore[arg-type]
@@ -388,7 +410,7 @@ async def test_failed_clarification_event_can_be_retried_idempotently() -> None:
 async def test_late_merchant_failure_preserves_partial_offer_and_browser() -> None:
     browser = FakeBrowser()
     manager = RunManager(
-        Settings(internal_token="token", openai_api_key="fake"),
+        Settings(internal_token="token", openrouter_api_key="fake"),
         FakeControl(),  # type: ignore[arg-type]
         agent_factory=PartialThenFailAgent,
         browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]

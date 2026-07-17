@@ -5,6 +5,12 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApiRouting } from '../src/server';
 
+interface SessionBody {
+  accessToken: string;
+  refreshToken: string;
+  user: { id: string; email: string; displayName: string };
+}
+
 describe('Health endpoints (e2e)', () => {
   let app: INestApplication;
 
@@ -29,4 +35,37 @@ describe('Health endpoints (e2e)', () => {
       expect(body.status).toBe('ok');
     },
   );
+
+  it('registers, logs in, and rotates a real mobile-compatible session', async () => {
+    const account = {
+      displayName: 'Integration User',
+      email: 'integration@example.test',
+      password: 'integration-password',
+    };
+    const registered = await request(app.getHttpServer() as Server)
+      .post('/api/v1/auth/register')
+      .send(account)
+      .expect(201);
+    const registeredBody = registered.body as SessionBody;
+    expect(registeredBody).toMatchObject({
+      user: {
+        email: account.email,
+        displayName: account.displayName,
+      },
+    });
+    expect(registeredBody.accessToken).toEqual(expect.any(String));
+    expect(registeredBody.refreshToken).toEqual(expect.any(String));
+
+    const loggedIn = await request(app.getHttpServer() as Server)
+      .post('/api/v1/auth/login')
+      .send({ email: account.email, password: account.password })
+      .expect(200);
+    const loggedInBody = loggedIn.body as SessionBody;
+    const refreshed = await request(app.getHttpServer() as Server)
+      .post('/api/v1/auth/refresh')
+      .send({ refreshToken: loggedInBody.refreshToken })
+      .expect(200);
+    const refreshedBody = refreshed.body as SessionBody;
+    expect(refreshedBody.user.id).toBe(loggedInBody.user.id);
+  });
 });

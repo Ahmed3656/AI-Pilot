@@ -1,0 +1,16 @@
+* text=auto
+
+*.js text eol=lf
+*.json text eol=lf
+*.jsx text eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# PowerShell scripts are supported on Windows and pwsh on Linux; keep one
+# canonical representation so Prettier sees identical input on both hosts.
+*.ps1 text eol=lf

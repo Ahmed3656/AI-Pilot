@@ -511,6 +511,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('X-Internal-Token', INTERNAL_TOKEN)
       .set('Authorization', `Bearer ${control.body.token}`)
       .expect(200);
+    expect(authorization.headers['x-dealpilot-viewer-mode']).toBe('control');
     expect(authorization.body).toMatchObject({
       authorized: true,
       runId,
@@ -645,6 +646,69 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .get(`/api/v1/shopping/runs/${created.run.id}`)
       .set('Authorization', `Bearer ${otherToken}`)
       .expect(404);
+  });
+
+  it('materializes canonical AI evidence and incomplete offers while retaining partial merchant failures', async () => {
+    const created = await createRun(
+      'retail',
+      'Find a deterministic integration laptop',
+      'en-EG',
+    );
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'materialize-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('materialize-domain'))
+      .send({ requestId: 'materialize-domain', domains: ['amazon.eg'] })
+      .expect(200);
+
+    const attemptId = 'attempt:identifier-longer-than-twenty-six-characters';
+    const evidenceId = 'evidence:identifier-longer-than-twenty-six-characters';
+    const offerId = 'offer:identifier-longer-than-twenty-six-characters';
+    await postEvent(runId, 'comparing', 'merchant.attempt_started', {
+      attemptId,
+      merchantId: 'amazon-eg',
+      merchantDomain: 'amazon.eg',
+      category: 'retail',
+    });
+    await postEvent(runId, 'comparing', 'evidence.captured', {
+      evidenceId,
+      kind: 'screenshot',
+      merchantAttemptId: attemptId,
+      redacted: true,
+    });
+    await postEvent(runId, 'comparing', 'offer.recorded', {
+      offerId,
+      validity: 'incomplete',
+      merchantAttemptId: attemptId,
+      evidenceIds: [evidenceId],
+    });
+    await postEvent(runId, 'comparing', 'merchant.attempt_completed', {
+      attemptId,
+      outcome: 'unavailable',
+      failureCode: 'MERCHANT_UNAVAILABLE',
+      evidenceIds: [evidenceId],
+    });
+
+    const report = await api()
+      .get(`/api/v1/shopping/runs/${runId}/report`)
+      .expect(200);
+    expect(report.body.incompleteOffers).toEqual([
+      expect.objectContaining({
+        id: offerId,
+        merchantAttemptId: attemptId,
+        evidenceIds: [evidenceId],
+      }),
+    ]);
+    expect(report.body.partialFailures).toEqual([
+      expect.objectContaining({
+        merchantAttemptId: attemptId,
+        code: 'MERCHANT_UNAVAILABLE',
+      }),
+    ]);
+    expect(report.body.evidence).toEqual([
+      expect.objectContaining({ id: evidenceId, redacted: true }),
+    ]);
   });
 
   function api() {

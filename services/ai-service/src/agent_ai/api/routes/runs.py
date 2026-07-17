@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request, status
 from fastapi.responses import JSONResponse
 
 from agent_ai.api.errors import contract_error
@@ -59,6 +59,7 @@ def _authenticate(
 async def create_run(
     body: InternalCreateRunRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
     authentication_error: Annotated[JSONResponse | None, Depends(_authenticate)],
 ) -> InternalCreateRunResponse | JSONResponse:
@@ -67,7 +68,10 @@ async def create_run(
     manager = _manager(request)
     try:
         result = await manager.create_run(body, idempotency_key)
-        await manager.start(result.run_id)
+        # Work starts only after the 202 response is on the wire. The API owns
+        # persistence and must be able to commit the accepted run before the
+        # first AI event arrives.
+        background_tasks.add_task(manager.start, result.run_id)
         return result
     except RunBusyError as exc:
         return contract_error(

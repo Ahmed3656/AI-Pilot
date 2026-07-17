@@ -1,12 +1,12 @@
 # DealPilot Egypt MVP Acceptance Matrix
 
-This matrix is the verification index for `docs/mvp-contract.md` version 1.0.0. `Automated` means a deterministic test is required in the owning component; `Manual` means an explicitly observed acceptance step is also required. Mocks and local HTML fixtures are valid only where stated. A pending row is not evidence that the current implementation complies.
+This matrix is the verification index for `docs/mvp-contract.md` version 1.0.0. `Automated` means a deterministic test is required in the owning component; `Manual` means an explicitly observed acceptance step is also required. Mocks and local HTML fixtures are valid only where stated.
 
-Owner labels refer to the follow-up component tasks: **API**, **AI**, **Mobile**, **Infra**, and **Integration**. This contract task defines the target and drift guard; it does not implement those components.
+The last column records the original pre-merge baseline and is retained as historical audit context; it is not the current implementation status. Current automated evidence is `npm run check:docker`, `npm run mvp:smoke`, and the deterministic `npm run demo` integration journey. Physical-phone/live-merchant rows remain manual and must not be claimed from the test adapter.
 
 ## Scope and public API
 
-| ID       | Requirement                                                                               | Future verification                                                                                            | Type               | Owner               | Current baseline                                                    |
+| ID       | Requirement                                                                               | Future verification                                                                                            | Type               | Owner               | Original pre-merge baseline                                         |
 | -------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------ | ------------------- | ------------------------------------------------------------------- |
 | SCOPE-01 | Market, currency, timezone are exactly `EG`, `EGP`, `Africa/Cairo`                        | Contract-schema test; API DTO rejection tests for supplied country/currency/timezone; Compose config assertion | Automated          | API, Infra          | Partial; API fixes EG/EGP but timezone contract is absent           |
 | SCOPE-02 | Locales are exactly `ar-EG` and `en-EG`                                                   | API create-run validation tests and mobile locale/type tests                                                   | Automated          | API, Mobile         | Gap; API omits locale and AI uses `ar`/`en`                         |
@@ -29,7 +29,7 @@ Owner labels refer to the follow-up component tasks: **API**, **AI**, **Mobile**
 
 ## State, errors, events, and internal integration
 
-| ID       | Requirement                                                                                                                   | Future verification                                                                   | Type      | Owner           | Current baseline                                                      |
+| ID       | Requirement                                                                                                                   | Future verification                                                                   | Type      | Owner           | Original pre-merge baseline                                           |
 | -------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------- | --------------- | --------------------------------------------------------------------- |
 | STATE-01 | Run status enum and allowed transitions are exact                                                                             | Table-driven state-machine unit test generated from contract artifact                 | Automated | API             | Partial; enum mostly matches but paused can resume to too many states |
 | STATE-02 | `resumeStatus` is recorded and is the only resume target                                                                      | State-machine and persistence tests across every pausable status                      | Automated | API             | Partial; fallback behavior permits ambiguity                          |
@@ -50,7 +50,7 @@ Owner labels refer to the follow-up component tasks: **API**, **AI**, **Mobile**
 
 ## Browser lifecycle, control, and safety
 
-| ID      | Requirement                                                                               | Future verification                                                                                 | Type               | Owner                  | Current baseline                                                       |
+| ID      | Requirement                                                                               | Future verification                                                                                 | Type               | Owner                  | Original pre-merge baseline                                            |
 | ------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------ | ---------------------- | ---------------------------------------------------------------------- |
 | LIFE-01 | Exactly one browser session is created per run                                            | Fake WebDriver call-count test through clarification, retries, pause, and handoff                   | Automated          | AI                     | Gap; lifecycle is task-scoped                                          |
 | LIFE-02 | Same session/cookies survive `ready_for_handoff` and `user_takeover`                      | Fake session-ID integration test; physical-phone observation of a harmless prepared session         | Automated + Manual | AI, Infra, Integration | Gap; AI currently closes browser in `_execute` finally block           |
@@ -67,7 +67,7 @@ Owner labels refer to the follow-up component tasks: **API**, **AI**, **Mobile**
 
 ## Address, report, environment, and deployment
 
-| ID      | Requirement                                                                               | Future verification                                                                  | Type      | Owner              | Current baseline                                            |
+| ID      | Requirement                                                                               | Future verification                                                                  | Type      | Owner              | Original pre-merge baseline                                 |
 | ------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------- | ------------------ | ----------------------------------------------------------- |
 | ADDR-01 | Plaintext address is process-memory only and expires at earliest bound                    | API vault fake-clock tests and persistence inspection                                | Automated | API                | Partial; 30-minute vault exists                             |
 | ADDR-02 | AI resolves one semantic field for the active approved recipient domain                   | API↔AI tests for every field, wrong run/domain, expired/revoked grant                | Automated | API, AI            | Partial                                                     |
@@ -86,6 +86,15 @@ Owner labels refer to the follow-up component tasks: **API**, **AI**, **Mobile**
 | DEMO-01 | Automated tests use mocks/fixtures and never contact live checkout                        | Test network denylist/sandbox assertion and source scan for live merchant calls      | Automated | Integration        | Pending integration guard                                   |
 | DEMO-02 | Live preflight is read-only and stops before login/payment/order/booking                  | Human checklist with timestamped, redacted outcome; no private screenshots committed | Manual    | Integration        | Pending; not part of this contract task                     |
 | DEMO-03 | Physical phone receives HTTPS/WSS and takes over the exact live session                   | Manual device checklist records run ID/session fingerprint and release recovery      | Manual    | Infra, Integration | Pending                                                     |
+
+## Current integration evidence
+
+- Contract/OpenAPI drift, forbidden aliases, canonical route and environment-name checks: `npm run test:contract` and `npm run test:infra`.
+- API state, DTO, idempotency, ownership, event, report, auth, and rejected-command behavior: API unit/e2e suite.
+- AI command vocabulary, browser safety/lifecycle, partial failure, report ordering, and deterministic adapter behavior: Python suite.
+- Mobile canonical service paths, contract parsing, UI flows, and WebSocket reconnection behavior: mobile Jest suite.
+- Real Compose migration, API -> AI -> Selenium -> API persistence, live/replayed events, same-browser claim/release/resume, and log privacy: `npm run demo`.
+- Manual evidence is still required for real merchant behavior and a physical phone over HTTPS/WSS. The deterministic adapter cannot satisfy those rows.
 
 ## Contract merge gate
 

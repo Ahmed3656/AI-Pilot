@@ -4,6 +4,7 @@ import { Public } from '../../core/decorators/public.decorator';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { RegisterDto } from './dto/register.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -12,19 +13,25 @@ export class AuthController {
 
   @Public()
   @Post('login')
-  @HttpCode(HttpStatus.NOT_IMPLEMENTED)
-  @ApiOperation({ summary: 'Authentication integration placeholder' })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Authenticate a DealPilot account' })
   login(@Body() dto: LoginDto) {
-    void dto;
-    return this.auth.login();
+    return this.auth.login(dto);
+  }
+
+  @Public()
+  @Post('register')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a DealPilot account' })
+  register(@Body() dto: RegisterDto) {
+    return this.auth.register(dto);
   }
 
   @Public()
   @Post('refresh')
-  @HttpCode(HttpStatus.NOT_IMPLEMENTED)
-  @ApiOperation({ summary: 'Refresh-token integration placeholder' })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rotate an authenticated refresh token' })
   refresh(@Body() dto: RefreshTokenDto) {
-    void dto;
-    return this.auth.refresh();
+    return this.auth.refresh(dto);
   }
 }

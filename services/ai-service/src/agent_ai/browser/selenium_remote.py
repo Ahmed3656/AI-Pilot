@@ -7,7 +7,7 @@ import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 from selenium import webdriver
@@ -214,6 +214,7 @@ class SeleniumRemoteBrowser:
         self.tabs: dict[str, str] = {}
         self.expected_domain: str | None = None
         self._safe_urls: dict[str, str] = {}
+        self._test_fixture_domain: str | None = None
 
     @property
     def session_id(self) -> str | None:
@@ -236,6 +237,28 @@ class SeleniumRemoteBrowser:
             self.tabs.clear()
             self._safe_urls.clear()
             self.expected_domain = None
+            self._test_fixture_domain = None
+
+    def load_deterministic_test_fixture(
+        self,
+        domain: str,
+        category: Category,
+        approved_domains: Iterable[str],
+    ) -> None:
+        """Load inert HTML in the real browser for the explicit test adapter only."""
+        if domain not in approved_domains:
+            raise SafetyViolation("Test fixture domain is not approved")
+        self.connect()
+        assert self.driver is not None
+        self.expected_domain = domain
+        self._test_fixture_domain = domain
+        html = (
+            "<!doctype html><html><head><title>DealPilot deterministic test merchant</title>"
+            "</head><body><main><h1>Deterministic integration fixture</h1>"
+            f"<p data-domain='{domain}' data-category='{category.value}'>"
+            "No purchase or booking controls are present.</p></main></body></html>"
+        )
+        self.driver.get(f"data:text/html;charset=utf-8,{quote(html)}")
 
     def navigate(
         self,
@@ -346,6 +369,8 @@ class SeleniumRemoteBrowser:
         allow_blank: bool,
     ) -> str:
         assert self.driver is not None
+        if self._test_fixture_domain and self.driver.current_url.startswith("data:text/html"):
+            return self._test_fixture_domain
         if allow_blank and self.driver.current_url == "about:blank":
             return self.expected_domain or ""
         return assert_allowed_url(
