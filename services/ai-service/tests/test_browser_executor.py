@@ -87,6 +87,28 @@ async def approve(_: ApprovalType, __: dict[str, Any]) -> bool:
     return True
 
 
+def test_remote_browser_uses_the_coordinate_contract_viewport() -> None:
+    captured: dict[str, Any] = {}
+
+    class Driver:
+        def set_window_size(self, width: int, height: int) -> None:
+            captured["window_size"] = (width, height)
+
+    def factory(*, command_executor: str, options: Any) -> Driver:
+        captured["command_executor"] = command_executor
+        captured["arguments"] = options.arguments
+        return Driver()
+
+    browser = SeleniumRemoteBrowser("http://browser:4444/wd/hub", driver_factory=factory)
+    browser.connect()
+
+    assert captured == {
+        "command_executor": "http://browser:4444/wd/hub",
+        "arguments": ["--disable-notifications", "--window-size=1280,800"],
+        "window_size": (1280, 800),
+    }
+
+
 @pytest.mark.asyncio
 async def test_semantic_address_is_resolved_only_at_address_field_and_redacted() -> None:
     browser = FakeBrowser({"name": "delivery-address", "aria_label": "Delivery address"})

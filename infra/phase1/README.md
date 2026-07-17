@@ -1,134 +1,99 @@
-# DealPilot Phase 1 infrastructure
+# DealPilot Egypt MVP infrastructure
 
-This directory is a self-contained Phase 1 deployment. It runs the existing NestJS API and FastAPI service with PostgreSQL, one Selenium standalone Chromium session, Selenium's built-in noVNC server, a Caddy gateway, and an optional remotely-managed Cloudflare Tunnel.
+`infra/phase1/docker-compose.yml` is the single canonical runtime stack. The root `docker-compose.yml` only includes this file, so root and infrastructure commands cannot drift into different deployments.
 
-Only Caddy binds a host port, and it binds to loopback. PostgreSQL, NestJS, FastAPI, WebDriver, direct noVNC, and cloudflared metrics are reachable only on Docker networks. The browser has 2 GB shared memory and no host filesystem mount.
+The stack runs PostgreSQL, a one-shot database migration gate, the NestJS API, the FastAPI AI service, one Selenium standalone Chromium session with noVNC, Caddy, and an optional Cloudflare Tunnel connector. Egypt is fixed to market `EG`, currency `EGP`, timezone `Africa/Cairo`, and locales `ar-EG`/`en-EG`.
 
-## Prerequisites and configuration
+## Prerequisites
 
-- Docker Engine 26.1.4 or later and Docker Compose 2.34 or later are recommended.
-- Copy `infra/phase1/.env.example` to `infra/phase1/.env` and replace every `change-me` value with a long random value.
-- Keep `infra/phase1/.env` out of source control. The repository's existing ignore rules already ignore it.
-- Run commands from the repository root.
+- Node.js 22 or newer and npm 10 or newer.
+- Docker Engine with Docker Compose 2.24 or newer.
+- An OpenAI API key supplied only at runtime. Never commit it or paste it into logs, screenshots, reports, or viewer URLs.
 
-Validate the model before starting anything:
+Run commands from the repository root. On the first lifecycle command, the runtime creates ignored `infra/phase1/.env` configuration with independent random PostgreSQL, JWT, internal, and viewer-token secrets. It never generates or stores an OpenAI key.
 
-```powershell
-docker compose -f infra/phase1/docker-compose.yml config
-```
-
-Use the explicit environment file after creating it:
+In PowerShell, provide the OpenAI key only to the current process before starting:
 
 ```powershell
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml config
+$env:AI_OPENAI_API_KEY = '<your runtime key>'
+npm run mvp:start
 ```
 
-## Profiles and lifecycle
+`mvp:start` validates the configuration without printing interpolated values, builds the images, starts the local profile, waits for the migration gate and health checks, and verifies service-to-service authentication. `AI_OPENAI_API_KEY` is mounted as a Compose secret granted only to `ai-service`; its entrypoint exports the value only inside that service process.
 
-Local-only starts Caddy on `127.0.0.1:8080` by default:
+## Root lifecycle commands
+
+| Command               | Result                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------- |
+| `npm run mvp:config`  | Validate the canonical Compose model without printing secrets                               |
+| `npm run mvp:build`   | Build the API and AI images                                                                 |
+| `npm run mvp:start`   | Build, migrate, start, wait for readiness, and run health checks                            |
+| `npm run mvp:stop`    | Stop containers and preserve PostgreSQL data                                                |
+| `npm run mvp:logs`    | Follow logs through the token/address/viewer/screenshot redactor                            |
+| `npm run mvp:migrate` | Run the one-shot migration job explicitly                                                   |
+| `npm run mvp:health`  | Verify container health, schema, Selenium, and two-way internal auth                        |
+| `npm run mvp:smoke`   | Exercise canonical routing and authenticated view/control modes without visiting a merchant |
+| `npm run mvp:clean`   | Stop the stack and delete its PostgreSQL volume                                             |
+
+The legacy root `docker:*` helpers delegate to these same commands. `mvp:clean` permanently removes local Phase 1 database data; it does not delete repository files or external resources.
+
+## Startup and readiness
+
+PostgreSQL must report healthy before `migrate` runs. The API cannot start until all TypeORM migrations complete successfully. API container readiness then checks both `/health/ready` and the required `shopping_runs` and `shopping_run_events` tables, so an open database port with an empty schema is not considered ready.
+
+The AI container is ready only when all of these conditions hold:
+
+- its production readiness endpoint accepts the live secret configuration;
+- the OpenAI secret file is non-empty;
+- Selenium reports an available Grid;
+- a correctly authenticated AI-to-API request reaches DTO validation.
+
+The health and smoke scripts also send rejected and accepted internal-auth probes in both API-to-AI and AI-to-API directions. Correct credentials must pass the auth guard and reach request validation; incorrect credentials must return `401`.
+
+## Exposure and networks
+
+Only Caddy publishes a host port, bound to `127.0.0.1:${DEALPILOT_GATEWAY_PORT:-8080}`. PostgreSQL, the API, FastAPI, WebDriver, and direct noVNC have no host bindings.
+
+| Network                    | Members                        | Purpose                                   |
+| -------------------------- | ------------------------------ | ----------------------------------------- |
+| `edge-plane`               | Caddy, optional cloudflared    | Loopback/tunnel ingress                   |
+| `control-plane` (internal) | Caddy, API, AI, Selenium       | Private control and viewer traffic        |
+| `data-plane` (internal)    | API, migration job, PostgreSQL | Private database traffic                  |
+| `agent-egress`             | AI, Selenium                   | OpenAI and approved Egypt merchant egress |
+
+Selenium exposes only container ports `4444` and `7900`. It permits one session, uses a 1280x800 screen and browser window, disables extensions, and keeps the VNC server interactive so a valid temporary control token can operate the same browser session. Unauthenticated access remains impossible because noVNC is reachable only through Caddy authorization.
+
+## Canonical gateway routes
+
+- `/api/*` proxies unchanged to the NestJS API. Public application routes use `/api/v1` only.
+- WebSocket upgrades are matched only at `/api/v1/shopping/runs/:runId/events` and use the `dealpilot.events.v1` plus `bearer.<viewer-token>` subprotocols. Viewer tokens never appear in URLs.
+- `/viewer/*` performs a private `POST /internal/v1/viewer/authorize` with `X-Internal-Token`. The incoming viewer bearer header or same-origin `dealpilot_viewer` cookie is validated on every HTTP/WebSocket request.
+- A `view` token opens noVNC with `view_only=1`. A valid, unexpired `control` token opens the interactive client for the API-controlled handoff period.
+- `/health*` proxies only API health. `/_gateway/health` reports Caddy process health.
+- `/internal/*`, FastAPI, WebDriver, direct noVNC, PostgreSQL, and all other paths are not public and return `404` at Caddy.
+
+Caddy removes viewer authorization, cookies, the internal token, and the authorized mode header before proxying to noVNC. Authorization failure or API unavailability is fail-closed; Caddy never falls through to the viewer upstream.
+
+## Local and Cloudflare profiles
+
+The default root commands use `local-only`. For the optional tunnel, create one remotely managed Cloudflare Tunnel whose only ingress target is `http://gateway:8080`, then set an HTTPS origin with no path and the connector token in the runtime environment:
 
 ```powershell
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml --profile local-only up -d --build
-infra/phase1/Test-Phase1Health.ps1 -Profile local-only
-infra/phase1/Invoke-Phase1Smoke.ps1 -Profile local-only
+$env:DEALPILOT_PROFILE = 'cloud-tunnel'
+$env:DEALPILOT_PUBLIC_ORIGIN = 'https://dealpilot.example.com'
+$env:EXPO_PUBLIC_API_URL = 'https://dealpilot.example.com'
+$env:CLOUDFLARE_TUNNEL_TOKEN = '<runtime tunnel token>'
+$env:AI_OPENAI_API_KEY = '<runtime OpenAI key>'
+npm run mvp:start
+npm run mvp:smoke
 ```
 
-Stop it without deleting PostgreSQL data:
+The mobile URL is the origin only; the client appends `/api/v1` and derives `wss://` from the same origin. Do not create separate public hostnames for the API, AI service, Selenium, noVNC, or PostgreSQL.
 
-```powershell
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml --profile local-only down
-```
+To stop tunnel traffic while preserving data, run `npm run mvp:stop` with the same profile. For credential rotation, replace the runtime value and recreate the affected services. For an incident or permanent shutdown, also revoke the old tunnel connector token and remove its public hostname in Cloudflare; stopping the local connector does not revoke copied credentials.
 
-The `cloud-tunnel` profile starts the same gateway plus cloudflared:
+## Safe validation
 
-```powershell
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml --profile cloud-tunnel up -d --build
-infra/phase1/Test-Phase1Health.ps1 -Profile cloud-tunnel
-infra/phase1/Invoke-Phase1Smoke.ps1 -Profile cloud-tunnel
-```
+`npm run mvp:smoke` creates one synthetic database run, issues short-lived view/control tokens, verifies gateway behavior and internal isolation, scans recent service logs for token URLs or screenshot payloads, and deletes the synthetic run in `finally`. It creates no WebDriver session, visits no merchant, submits no purchase or booking, and performs no external destructive action.
 
-The smoke test only checks health, routing, port isolation, and viewer rejection. It does not create a WebDriver session or visit a merchant.
-
-## Ports and routes
-
-| Component | Container port | Host/public exposure |
-| --- | ---: | --- |
-| Caddy gateway | 8080 | `127.0.0.1:${DEALPILOT_GATEWAY_PORT:-8080}` locally; Cloudflare hostname in tunnel mode |
-| NestJS API | 3000 | Internal only |
-| FastAPI AI service | 8000 | Internal only |
-| PostgreSQL | 5432 | Internal only |
-| Selenium WebDriver | 4444 | Internal only |
-| Selenium noVNC | 7900 | Internal only; available through authenticated `/viewer/*` |
-| cloudflared metrics | 2000 | Internal only |
-
-Caddy exposes these routes on the single origin:
-
-- `/api/*` proxies to NestJS without rewriting the path.
-- `/api/v1/shopping/ws` and its subpaths explicitly proxy WebSocket upgrades to NestJS. Caddy also supports WebSocket upgrades on the general `/api/*` proxy.
-- `/viewer/*` first makes a forward-auth request to NestJS at `/internal/v1/viewer/authorize`, then strips `/viewer` and proxies to noVNC.
-- `/health`, `/health/live`, and `/health/ready` proxy to the existing NestJS health controller.
-- `/_gateway/health` reports only Caddy process health.
-- Every other path returns 404. In particular, FastAPI, WebDriver, direct noVNC, and the viewer authorization endpoint are not public routes.
-
-The WebDriver URL for containers is `http://browser:4444/wd/hub`. The noVNC upstream is `http://browser:7900`. The screen and Chromium window are both configured as 1280x800, and the AI integration must preserve that size when creating or reusing a session. Phase 1 allows exactly one active Selenium session. Browser extension loading is disabled, VNC is view-only, and access control lives at Caddy rather than in noVNC.
-
-## NestJS and FastAPI integration contracts
-
-The current repository does not yet implement the shopping socket or viewer authorization handler. Until the authorization handler exists, Caddy forwards the authorization subrequest to NestJS and NestJS returns 404, so viewer access remains fail-closed.
-
-NestJS must add `GET /internal/v1/viewer/authorize` with this contract:
-
-- Accept the original `Authorization` header or a secure viewer-session cookie. Caddy supplies `X-Forwarded-Method` and `X-Forwarded-Uri` for the original viewer request.
-- Verify `X-DealPilot-Viewer-Auth` against `VIEWER_AUTH_SHARED_SECRET` using a timing-safe comparison.
-- Return 2xx only for a live, unexpired viewer grant that is authorized for the current user and browser session. Return 401 for missing/expired credentials and 403 for a valid user who does not own the session.
-- Optionally return `X-DealPilot-Viewer-Session`; Caddy copies it for downstream request processing but removes credentials before proxying to noVNC.
-- Never redirect an unauthorized request and never treat a network or dependency error as authorization success.
-- Implement the shopping WebSocket endpoint at `/api/v1/shopping/ws`, authenticate it during the upgrade, enforce user/session ownership, and handle reconnect and token expiry.
-
-NestJS can reach FastAPI at `http://ai-service:8000`, and FastAPI receives `AI_NEST_API_INTERNAL_URL`, `AI_SELENIUM_REMOTE_URL`, and `AI_INTERNAL_SERVICE_TOKEN`. The existing FastAPI settings ignore these extra values today; its future browser orchestration must declare them, authenticate internal calls, create at most one remote session, request a 1280x800 window, and always quit the session on completion or cancellation.
-
-## Physical phone through Cloudflare Tunnel
-
-Create a remotely-managed Cloudflare Tunnel and configure exactly one public hostname, for example `dealpilot-phase1.example.com`. Its only ingress service must be:
-
-```text
-http://gateway:8080
-```
-
-Copy only the tunnel token into `CLOUDFLARE_TUNNEL_TOKEN` in `infra/phase1/.env`. Compose passes it as `TUNNEL_TOKEN`, so it is not placed in the cloudflared command line. Cloudflare terminates HTTPS and WSS; Caddy receives HTTP on the private Docker network. Do not add public hostnames or ingress rules for API, FastAPI, Selenium, noVNC, or PostgreSQL.
-
-Set the Expo client value to the origin, with no trailing path:
-
-```dotenv
-EXPO_PUBLIC_API_URL=https://dealpilot-phase1.example.com
-```
-
-The current Expo config reads this value at bundle/start time. Reload the app after changing it. It is public configuration, not a secret. Use `https://` API URLs and derive shopping sockets from the same host with `wss://`; do not configure a second socket or viewer origin. For browser-based noVNC access, prefer a short-lived, `Secure`, `HttpOnly`, same-origin cookie because browser WebSockets cannot reliably attach an arbitrary bearer header. Never put viewer credentials in the viewer URL or query string.
-
-## Token rotation and tunnel shutdown
-
-- Viewer grants should be single-session, short-lived (five minutes or less), revocable, and rotated whenever ownership changes, the WebView reconnects after expiry, or the browser session ends.
-- Rotate `JWT_SECRET`, `INTERNAL_SERVICE_TOKEN`, or `VIEWER_AUTH_SHARED_SECRET` by updating the secret store/environment and recreating both dependent services. Rotating JWT signing material should support an overlap/key-ID period if uninterrupted sessions are required.
-- Rotate a Cloudflare Tunnel token in the Cloudflare dashboard, replace `CLOUDFLARE_TUNNEL_TOKEN`, then run:
-
-```powershell
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml --profile cloud-tunnel up -d --force-recreate cloudflared
-```
-
-- Immediately revoke the old tunnel token after the replacement connector is healthy.
-- For a temporary shutdown, stop the connector:
-
-```powershell
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml --profile cloud-tunnel stop cloudflared
-```
-
-- For an incident or permanent shutdown, stop cloudflared, disable/delete the public hostname route, and revoke the connector token in Cloudflare. Stopping a container alone does not revoke a copied token.
-
-## Safe diagnostics
-
-```powershell
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml --profile local-only ps
-docker compose --env-file infra/phase1/.env -f infra/phase1/docker-compose.yml --profile local-only logs --tail 100 gateway api ai-service browser
-```
-
-Do not publish or temporarily map ports 3000, 8000, 4444, 7900, or 5432 for troubleshooting. Use `docker compose exec` from inside the stack instead.
+Use `npm run mvp:logs` for diagnostics. It masks configured service secrets, bearer/query tokens, address fields, viewer URLs, and screenshot/base64 data. Do not bypass the wrapper by publishing private service ports or sharing raw Docker inspection/configuration output.

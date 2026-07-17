@@ -224,7 +224,6 @@ class SeleniumRemoteBrowser:
             return
         options = webdriver.ChromeOptions()
         options.add_argument("--disable-notifications")
-        options.add_argument("--disable-extensions")
         options.add_argument("--window-size=1280,800")
         self.driver = self._driver_factory(command_executor=self.remote_url, options=options)
         if hasattr(self.driver, "set_window_size"):

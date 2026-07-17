@@ -7,23 +7,44 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-dealpilot}
       POSTGRES_USER: ${POSTGRES_USER:-dealpilot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-phase1-postgres-change-me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/phase1/.env}
     expose:
-      - "5432"
+      - '5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
       - data-plane
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
-        ]
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    restart: 'no'
+    init: true
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dealpilot}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/phase1/.env}@postgres:5432/${POSTGRES_DB:-dealpilot}
+      TZ: Africa/Cairo
+    command:
+      - node
+      - -e
+      - >-
+        const source = require('./apps/api/dist/database/data-source.js').default;
+        (async () => {
+          await source.initialize();
+          try { await source.runMigrations({ transaction: 'all' }); }
+          finally { await source.destroy(); }
+        })().catch(() => process.exit(1));
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - data-plane
 
   api:
     build:
@@ -32,24 +53,30 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      NODE_ENV: ${NODE_ENV:-development}
-      PORT: "3000"
-      DATABASE_ENABLED: "true"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-dealpilot}:${POSTGRES_PASSWORD:-phase1-postgres-change-me}@postgres:5432/${POSTGRES_DB:-dealpilot}
-      JWT_SECRET: ${JWT_SECRET:-phase1-local-jwt-secret-change-me-32chars}
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: '3000'
+      DATABASE_ENABLED: 'true'
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dealpilot}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/phase1/.env}@postgres:5432/${POSTGRES_DB:-dealpilot}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/phase1/.env}
       JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
       JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-7d}
-      AI_SERVICE_URL: http://ai-service:8000
-      SELENIUM_REMOTE_URL: http://browser:4444/wd/hub
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-phase1-internal-service-token-change-me}
-      VIEWER_AUTH_SHARED_SECRET: ${VIEWER_AUTH_SHARED_SECRET:-phase1-viewer-auth-shared-secret-change-me}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8000}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?Set INTERNAL_TOKEN in infra/phase1/.env}
+      VIEWER_TOKEN_SECRET: ${VIEWER_TOKEN_SECRET:?Set VIEWER_TOKEN_SECRET in infra/phase1/.env}
+      VIEWER_TOKEN_TTL_SECONDS: ${VIEWER_TOKEN_TTL_SECONDS:-900}
+      ADDRESS_SECRET_TTL_MS: ${ADDRESS_SECRET_TTL_MS:-1800000}
+      CONTROL_LEASE_TTL_SECONDS: ${CONTROL_LEASE_TTL_SECONDS:-120}
+      RUN_BROWSER_TTL_SECONDS: ${RUN_BROWSER_TTL_SECONDS:-3600}
+      EVENT_RETENTION_SECONDS: ${EVENT_RETENTION_SECONDS:-86400}
+      DEALPILOT_PUBLIC_ORIGIN: ${DEALPILOT_PUBLIC_ORIGIN:-http://localhost:8080}
+      TZ: Africa/Cairo
     expose:
-      - "3000"
+      - '3000'
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
-      - app-plane
+      - control-plane
       - data-plane
     healthcheck:
       test:
@@ -57,9 +84,17 @@ services:
         - node
         - -e
         - >-
-          fetch('http://127.0.0.1:3000/health/ready')
-          .then((response) => process.exit(response.ok ? 0 : 1))
-          .catch(() => process.exit(1))
+          const { Client } = require('pg');
+          (async () => {
+            const response = await fetch('http://127.0.0.1:3000/health/ready');
+            if (!response.ok) throw new Error('api-not-ready');
+            const client = new Client({ connectionString: process.env.DATABASE_URL });
+            await client.connect();
+            try {
+              const result = await client.query("SELECT to_regclass('public.shopping_runs')::text AS runs, to_regclass('public.shopping_run_events')::text AS events");
+              if (result.rows[0]?.runs !== 'shopping_runs' || result.rows[0]?.events !== 'shopping_run_events') throw new Error('schema-not-ready');
+            } finally { await client.end(); }
+          })().catch(() => process.exit(1));
       interval: 10s
       timeout: 5s
       retries: 20
@@ -71,67 +106,86 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     init: true
+    command:
+      - /bin/sh
+      - -eu
+      - -c
+      - >-
+        export AI_OPENAI_API_KEY="$$(cat /run/secrets/ai_openai_api_key)";
+        exec uvicorn agent_ai.main:app --host 0.0.0.0 --port 8000
     environment:
-      AI_ENVIRONMENT: ${AI_ENVIRONMENT:-development}
+      AI_ENVIRONMENT: ${AI_ENVIRONMENT:-production}
       AI_HOST: 0.0.0.0
-      AI_PORT: "8000"
+      AI_PORT: '8000'
       AI_LOG_LEVEL: ${AI_LOG_LEVEL:-INFO}
-      AI_NEST_API_INTERNAL_URL: http://api:3000
-      AI_SELENIUM_REMOTE_URL: http://browser:4444/wd/hub
-      AI_INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-phase1-internal-service-token-change-me}
+      AI_MODEL: ${AI_MODEL:-gpt-5.6}
+      AI_SELENIUM_REMOTE_URL: ${AI_SELENIUM_REMOTE_URL:-http://browser:4444/wd/hub}
+      AI_CONTROL_API_URL: ${AI_CONTROL_API_URL:-http://api:3000}
+      AI_INTERNAL_TOKEN: ${INTERNAL_TOKEN:?Set INTERNAL_TOKEN in infra/phase1/.env}
+      AI_MAX_COMPUTER_STEPS: ${AI_MAX_COMPUTER_STEPS:-80}
+      AI_REQUEST_TIMEOUT_SECONDS: ${AI_REQUEST_TIMEOUT_SECONDS:-30}
+      RUN_BROWSER_TTL_SECONDS: ${RUN_BROWSER_TTL_SECONDS:-3600}
+      TZ: Africa/Cairo
+    secrets:
+      - ai_openai_api_key
     expose:
-      - "8000"
+      - '8000'
     depends_on:
+      api:
+        condition: service_healthy
       browser:
         condition: service_healthy
     networks:
-      - app-plane
+      - control-plane
+      - agent-egress
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - >-
-          import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)
+        - |-
+          import json, os, pathlib, urllib.error, urllib.request;
+          assert pathlib.Path('/run/secrets/ai_openai_api_key').stat().st_size > 0;
+          assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3))['status'] == 'ok';
+          assert json.load(urllib.request.urlopen('http://browser:4444/status', timeout=3))['value']['ready'] is True;
+          request = urllib.request.Request('http://api:3000/internal/v1/secrets/resolve', data=b'{}', headers={'Content-Type': 'application/json', 'X-Internal-Token': os.environ['AI_INTERNAL_TOKEN']}, method='POST');
+          try: urllib.request.urlopen(request, timeout=3); raise AssertionError('invalid request unexpectedly accepted')
+          except urllib.error.HTTPError as error: assert error.code == 400
       interval: 10s
-      timeout: 5s
+      timeout: 8s
       retries: 20
-      start_period: 15s
+      start_period: 20s
 
   browser:
-    image: ${SELENIUM_IMAGE:-selenium/standalone-chromium:4.46.0-20260707}
+    image: ${SELENIUM_IMAGE:-selenium/standalone-chromium:4.45.0-20260606}
     restart: unless-stopped
     shm_size: 2gb
     environment:
-      SE_NODE_MAX_SESSIONS: "1"
-      SE_NODE_OVERRIDE_MAX_SESSIONS: "false"
-      SE_NODE_SESSION_TIMEOUT: ${SELENIUM_SESSION_TIMEOUT_SECONDS:-900}
-      SE_SESSION_REQUEST_TIMEOUT: ${SELENIUM_REQUEST_TIMEOUT_SECONDS:-30}
-      SE_SCREEN_WIDTH: "1280"
-      SE_SCREEN_HEIGHT: "800"
-      SE_SCREEN_DEPTH: "24"
-      SE_START_XVFB: "true"
-      SE_START_VNC: "true"
-      SE_VNC_NO_PASSWORD: "true"
-      SE_VNC_VIEW_ONLY: "true"
-      SE_MASK_SECRETS: "true"
+      SE_NODE_MAX_SESSIONS: ${SE_NODE_MAX_SESSIONS:-1}
+      SE_NODE_OVERRIDE_MAX_SESSIONS: 'false'
+      SE_NODE_SESSION_TIMEOUT: ${SE_NODE_SESSION_TIMEOUT:-3600}
+      SE_SESSION_REQUEST_TIMEOUT: ${SE_SESSION_REQUEST_TIMEOUT:-30}
+      SE_SCREEN_WIDTH: '1280'
+      SE_SCREEN_HEIGHT: '800'
+      SE_SCREEN_DEPTH: '24'
+      SE_START_XVFB: 'true'
+      SE_START_VNC: 'true'
+      SE_VNC_NO_PASSWORD: 'true'
+      SE_MASK_SECRETS: 'true'
       SE_BROWSER_ARGS_WINDOW_SIZE: --window-size=1280,800
       SE_BROWSER_ARGS_DISABLE_EXTENSIONS: --disable-extensions
       SE_BROWSER_ARGS_DISABLE_COMPONENT_EXTENSIONS: --disable-component-extensions-with-background-pages
       SE_BROWSER_ARGS_NO_FIRST_RUN: --no-first-run
       SE_BROWSER_ARGS_NO_DEFAULT_BROWSER_CHECK: --no-default-browser-check
+      TZ: Africa/Cairo
     expose:
-      - "4444"
-      - "7900"
+      - '4444'
+      - '7900'
     networks:
-      - app-plane
+      - control-plane
+      - agent-egress
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "/opt/bin/check-grid.sh --host 0.0.0.0 --port 4444",
-        ]
+      test: ['CMD-SHELL', '/opt/bin/check-grid.sh --host 0.0.0.0 --port 4444']
       interval: 10s
       timeout: 10s
       retries: 12
@@ -145,9 +199,12 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      VIEWER_AUTH_SHARED_SECRET: ${VIEWER_AUTH_SHARED_SECRET:-phase1-viewer-auth-shared-secret-change-me}
+      CADDY_API_UPSTREAM: ${CADDY_API_UPSTREAM:-api:3000}
+      CADDY_VIEWER_UPSTREAM: ${CADDY_VIEWER_UPSTREAM:-browser:7900}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?Set INTERNAL_TOKEN in infra/phase1/.env}
+      TZ: Africa/Cairo
     ports:
-      - "127.0.0.1:${DEALPILOT_GATEWAY_PORT:-8080}:8080"
+      - '127.0.0.1:${DEALPILOT_GATEWAY_PORT:-8080}:8080'
     volumes:
       - type: bind
         source: ./Caddyfile
@@ -159,12 +216,22 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      ai-service:
+        condition: service_healthy
       browser:
         condition: service_healthy
     networks:
-      - app-plane
+      - edge-plane
+      - control-plane
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/_gateway/health"]
+      test:
+        [
+          'CMD',
+          'wget',
+          '-q',
+          '--spider',
+          'http://127.0.0.1:8080/_gateway/health',
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -187,19 +254,28 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     expose:
-      - "2000"
+      - '2000'
     depends_on:
       gateway:
         condition: service_healthy
     networks:
-      - app-plane
+      - edge-plane
 
 volumes:
   postgres-data:
 
+secrets:
+  ai_openai_api_key:
+    environment: AI_OPENAI_API_KEY
+
 networks:
-  app-plane:
+  edge-plane:
     driver: bridge
+  control-plane:
+    driver: bridge
+    internal: true
   data-plane:
     driver: bridge
     internal: true
+  agent-egress:
+    driver: bridge

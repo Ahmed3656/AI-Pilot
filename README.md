@@ -1,109 +1,68 @@
-# AI Pilot
+# DealPilot Egypt MVP
 
-Production-minded foundation for a computer-use assistant. This repository intentionally contains no automation, agents, prompts, workflows, OCR, vision processing, or domain features.
+DealPilot is an Egypt-only shopping assistant for retail, food, and cinema comparisons. The fixed market is `EG`, currency is `EGP`, business timezone is `Africa/Cairo`, and supported locales are `ar-EG` and `en-EG`. Category selection may be automatic or explicitly retail, food, or cinema.
 
-The API includes a lightweight observability layer inspired by the proven Blooms Egypt setup: correlated structured logs, request/controller/provider timings, slow-operation warnings, database query fingerprints, and N+1 detection. Thresholds are configurable through environment variables, and sensitive fields are redacted.
+The AI may search approved Egypt merchants, compare complete totals, test public coupons, and prepare a reversible cart or booking flow. It must never submit a purchase, place an order, confirm checkout or a booking, enter payment data, or perform any final irreversible action. The user completes those steps during temporary control of the same paused browser session.
 
 ## Repository layout
 
 ```text
-apps/
-  api/                 NestJS backend
-  mobile/              Expo React Native app
-services/
-  ai-service/          FastAPI AI-service shell
-docs/                  Architecture decisions
+apps/api/             NestJS control API and PostgreSQL migrations
+apps/mobile/          Expo mobile client
+services/ai-service/  FastAPI/OpenAI/Selenium browser agent
+infra/phase1/         Canonical Compose, Caddy, health, smoke, and deployment docs
+docs/                 Frozen MVP contract and acceptance matrix
 ```
 
-## Prerequisites
+## Install and verify
 
-- Node.js 22+
-- npm 10+
-- Python 3.12+
-- Docker Desktop (optional)
+Use Node.js 22+, npm 10+, Python 3.12+, and Docker Compose 2.24+.
 
-## Install
-
-```bash
+```powershell
 npm run setup
-```
-
-This installs Node dependencies, creates the repository-local Python environment, installs the AI service, and runs environment diagnostics. The repository includes `.nvmrc` and `.node-version` files targeting Node 22.
-
-To refresh only the Python environment after moving the repository:
-
-```bash
-npm run setup:ai
-```
-
-## Run locally
-
-Start the API (database integration is disabled unless `DATABASE_ENABLED=true`):
-
-```bash
-npm run dev:api
-```
-
-Start the mobile app in another terminal:
-
-```bash
-npm run dev:mobile
-```
-
-Start the AI service in another terminal:
-
-```bash
-npm run dev:ai
-```
-
-Or start API, mobile, and AI together with coordinated shutdown:
-
-```bash
-npm run dev
-```
-
-Endpoints:
-
-- API health: `http://localhost:3000/health`, `/health/live`, `/health/ready`
-- API documentation: `http://localhost:3000/docs`
-- AI health: `http://localhost:8000/health`, `/health/live`, `/health/ready`
-
-## Verify
-
-```bash
 npm run check
 ```
 
-`check` runs formatting verification, linting, TypeScript checks, API and AI tests, and builds. Useful focused commands include:
+`npm run check` runs formatting checks, API/mobile/AI lint and type checks, contract and infrastructure tests, API/AI tests, and builds.
 
-| Command                     | Purpose                                                        |
-| --------------------------- | -------------------------------------------------------------- |
-| `npm run doctor`            | Check Node, npm, Docker, Python, and installed dependencies    |
-| `npm run dev:mobile:clear`  | Start Expo with a cleared Metro cache                          |
-| `npm run dev:mobile:web`    | Start the Expo web target                                      |
-| `npm run dev:api:debug`     | Start the API in watch/debug mode                              |
-| `npm run build:all`         | Build the API and AI service and export the mobile web app     |
-| `npm run test:api:watch`    | Run API tests in watch mode                                    |
-| `npm run test:api:coverage` | Generate API test coverage                                     |
-| `npm run lint:fix`          | Apply safe lint fixes across all services                      |
-| `npm run format`            | Format TypeScript, JavaScript, JSON, Markdown, and Python      |
-| `npm run health:check`      | Check running API and AI health endpoints                      |
-| `npm run clean`             | Remove generated build, coverage, Expo, and Python cache files |
-| `npm run mobile:doctor`     | Run Expo dependency and configuration diagnostics              |
+## Start the complete MVP
 
-Database migration helpers use the `db:migration:*` prefix. Docker lifecycle helpers use `docker:build`, `docker:up`, `docker:down`, `docker:logs`, and `docker:ps`.
+Set the OpenAI key in the current process. The first command creates ignored local service configuration with random secrets; it never commits or prints their values.
 
-## Docker
-
-```bash
-npm run docker:up
+```powershell
+$env:AI_OPENAI_API_KEY = '<your runtime key>'
+npm run mvp:start
+npm run mvp:smoke
 ```
 
-The Compose stack starts PostgreSQL, the API, and the AI service. The mobile app remains a local Expo development process.
+Only the Caddy gateway binds locally, at `http://localhost:8080` by default. PostgreSQL, API, AI, WebDriver, and noVNC stay on private Compose networks. The migration job must complete and schema-aware readiness must pass before the gateway becomes healthy.
 
-## Extension rules
+Root lifecycle commands:
 
-- Put feature-specific code inside its owning module or feature package.
-- Keep `shared` and provider contracts business-neutral.
-- Generate reviewed migrations; never enable schema synchronization in shared environments.
-- Replace TODO placeholders only when implementing the corresponding feature packet.
+| Command               | Purpose                                                  |
+| --------------------- | -------------------------------------------------------- |
+| `npm run mvp:config`  | Validate Compose without displaying interpolated secrets |
+| `npm run mvp:build`   | Build all local application images                       |
+| `npm run mvp:start`   | Build, migrate, start, and wait for health               |
+| `npm run mvp:stop`    | Stop while preserving the database volume                |
+| `npm run mvp:logs`    | Follow redacted logs                                     |
+| `npm run mvp:migrate` | Run migrations explicitly                                |
+| `npm run mvp:health`  | Check schema and real internal authentication            |
+| `npm run mvp:smoke`   | Check routing, isolation, and viewer view/control modes  |
+| `npm run mvp:clean`   | Stop and remove the local database volume                |
+
+`npm run mvp:clean` deletes local Phase 1 database data. See [infra/phase1/README.md](infra/phase1/README.md) for profiles, routes, viewer security, Cloudflare Tunnel setup, credential rotation, and validation details.
+
+## Local component development
+
+The non-container development commands remain available:
+
+```powershell
+npm run dev:api
+npm run dev:ai
+npm run dev:mobile
+```
+
+Useful focused checks include `npm run test:infra`, `npm run test:contract`, `npm run typecheck`, `npm run lint`, and `npm run build`. Database development helpers use the `db:migration:*` prefix; Docker helpers delegate to the canonical `mvp:*` stack.
+
+Mocks and local HTML fixtures are allowed in automated tests, but must never be represented as a successful live merchant demonstration. Never commit API keys, tokens, addresses, private screenshots, viewer URLs, cookies, payment data, or other secrets.

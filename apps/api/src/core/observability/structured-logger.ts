@@ -13,7 +13,7 @@ const LEVEL_PRIORITY: Record<ObservabilityLevel, number> = {
 };
 
 const SENSITIVE_KEY =
-  /password|passphrase|secret|token|authorization|cookie|recipientName|mobileNumber|governorate|cityOrArea|street|building|floor|apartment|landmark|postalCode/i;
+  /password|passphrase|secret|token|authorization|cookie|recipientName|mobileNumber|governorate|cityOrArea|street|building|floor|apartment|landmark|postalCode|screenshot|imageData|image_url|viewerUrl/i;
 
 export function redactUrl(value: string): string {
   try {
