@@ -11,6 +11,7 @@ from agent_ai.browser.selenium_remote import (
     SecretRedactor,
     SeleniumRemoteBrowser,
     VisualFallbackRequired,
+    WorkflowBoundaryReached,
 )
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "SecretRedactor",
     "SeleniumRemoteBrowser",
     "VisualFallbackRequired",
+    "WorkflowBoundaryReached",
     "assert_allowed_url",
 ]

@@ -42,7 +42,11 @@ from agent_ai.schemas.runs import (
     InternalCreateRunResponse,
 )
 from agent_ai.vision import GeminiVisionFallbackLocator, VisionFallbackLocator
-from agent_ai.workflows import validate_agent_result
+from agent_ai.workflows import (
+    fallback_request_understanding,
+    normalize_request_understanding,
+    validate_agent_result,
+)
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -58,6 +62,7 @@ class ComputerAgent(Protocol):
         executor: BrowserActionExecutor,
         address_handle: str | None = None,
         discovery_sink: Callable[[str, dict[str, Any]], Any] | None = None,
+        request_understanding: dict[str, Any] | None = None,
     ) -> str: ...
 
 
@@ -140,8 +145,11 @@ class RunRecord:
     task: asyncio.Task[None] | None = None
     ttl_task: asyncio.Task[None] | None = None
     executor: BrowserActionExecutor | None = None
+    request_understanding: dict[str, Any] = field(default_factory=dict)
     emitted_offer_ids: set[str] = field(default_factory=set)
     emitted_coupon_ids: set[str] = field(default_factory=set)
+    emitted_offer_fingerprints: dict[str, str] = field(default_factory=dict)
+    emitted_coupon_fingerprints: dict[str, str] = field(default_factory=dict)
 
     @property
     def run_id(self) -> str:
@@ -229,8 +237,9 @@ def _merchant_start_url(record: RunRecord, domain: str) -> str:
     assert record.category is not None
     if record.category is not Category.RETAIL:
         return _START_URLS[record.category][domain]
-    normalized_query = " ".join(record.request.query.split())[:300]
-    return _RETAIL_SEARCH_URLS[domain].format(query=quote_plus(normalized_query))
+    fallback = fallback_request_understanding(record.request.query, record.category)
+    search_query = str(record.request_understanding.get("search_query") or fallback["search_query"])
+    return _RETAIL_SEARCH_URLS[domain].format(query=quote_plus(search_query))
 
 
 class ScopedSecretResolver:
@@ -626,7 +635,10 @@ class RunManager:
             # browser work and any resulting failure are reported by this
             # background task through canonical run events.
             assert record.browser is not None
-            await asyncio.to_thread(record.browser.connect)
+            await asyncio.gather(
+                self._understand_request(record),
+                asyncio.to_thread(record.browser.connect),
+            )
             await self._request_domains(record)
             await record.domains_event.wait()
             if record.status in TERMINAL_STATUSES:
@@ -731,6 +743,28 @@ class RunManager:
             status=RunStatus.AWAITING_DOMAIN_APPROVAL,
         )
 
+    async def _understand_request(self, record: RunRecord) -> None:
+        assert record.category is not None
+        fallback = fallback_request_understanding(record.request.query, record.category)
+        understand = getattr(record.agent, "understand_request", None)
+        if not callable(understand):
+            record.request_understanding = fallback
+            return
+        try:
+            value = await understand(query=record.request.query, category=record.category)
+        except Exception as exc:
+            logger.warning(
+                "Request understanding fell back run_id=%s error_type=%s",
+                record.run_id,
+                type(exc).__name__,
+            )
+            value = fallback
+        record.request_understanding = normalize_request_understanding(
+            value,
+            user_query=record.request.query,
+            category=record.category,
+        )
+
     async def _run_approved_merchants(self, record: RunRecord) -> None:
         assert record.category is not None
         workers: list[MerchantWorker] = []
@@ -833,6 +867,7 @@ class RunManager:
                 status_getter=lambda: record.status,
                 merchant_attempt_getter=lambda: worker.attempt.id,
                 action_lock=worker.action_lock,
+                allow_login_takeover=bool(record.request_understanding.get("requires_checkout")),
             )
             worker.executor = executor
             if record.executor is None:
@@ -848,6 +883,7 @@ class RunManager:
                     data,
                     merchant_domain=worker.domain,
                 ),
+                request_understanding=record.request_understanding,
             )
             await record.active_event.wait()
             raw = _attach_evidence(raw, executor.evidence_ids)
@@ -1054,11 +1090,21 @@ class RunManager:
             data["merchant_domain"] = merchant_domain
             if kind in {"offer", "coupon"}:
                 data["merchant"] = merchant_domain
+                worker = record.workers.get(merchant_domain)
+                if worker is not None and worker.executor is not None:
+                    available_evidence = worker.executor.evidence_ids
+                    requested_evidence = {str(value) for value in data.get("evidence_ids", [])}
+                    verified_evidence = [
+                        evidence_id
+                        for evidence_id in available_evidence
+                        if evidence_id in requested_evidence
+                    ]
+                    data["evidence_ids"] = verified_evidence or available_evidence[-1:]
         if kind == "offer":
-            record.partial_offers.append(data)
+            _upsert_discovery(record.partial_offers, data, "offer_id")
             await self._emit_offer(record, data)
         elif kind == "coupon":
-            record.partial_coupons.append(data)
+            _upsert_discovery(record.partial_coupons, data, "coupon_attempt_id")
             await self._emit_coupon(record, data)
         elif kind == "warning":
             message = str(data.get("message", "Merchant warning"))
@@ -1114,39 +1160,38 @@ class RunManager:
 
     async def _emit_offer(self, record: RunRecord, data: dict[str, Any]) -> None:
         offer_id = str(data.get("offer_id") or _stable_id("offer", data))
-        if offer_id in record.emitted_offer_ids:
+        fingerprint = _fingerprint(data)
+        if record.emitted_offer_fingerprints.get(offer_id) == fingerprint:
             return
-        record.emitted_offer_ids.add(offer_id)
         evidence_ids = [str(value) for value in data.get("evidence_ids", [])]
-        validity = (
-            "valid"
-            if data.get("valid") is True
-            else ("incomplete" if data.get("incomplete_reason") else "excluded")
-        )
-        attempt_id = (
-            _attempt_id(record, data.get("merchant")) or next(iter(record.attempts.values())).id
-        )
-        payload: dict[str, Any] = {
-            "offerId": offer_id,
-            "validity": validity,
-            "merchantAttemptId": attempt_id,
-            "evidenceIds": evidence_ids,
-        }
-        snapshot = _normalized_offer_snapshot(record, data, validity)
-        if snapshot is not None:
-            payload["offer"] = snapshot
+        validity = _candidate_validity(data)
         await self.control.emit(
             record.run_id,
             "offer.recorded",
-            payload,
+            {
+                "offerId": offer_id,
+                "validity": validity,
+                "merchantAttemptId": _attempt_id(record, data.get("merchant"))
+                or next(iter(record.attempts.values())).id,
+                "evidenceIds": evidence_ids,
+                "offer": _offer_event_data(record.category, data, validity),
+            },
+            status=record.status,
+        )
+        record.emitted_offer_ids.add(offer_id)
+        record.emitted_offer_fingerprints[offer_id] = fingerprint
+        await self.control.emit(
+            record.run_id,
+            "report.updated",
+            _report_counts(record),
             status=record.status,
         )
 
     async def _emit_coupon(self, record: RunRecord, data: dict[str, Any]) -> None:
         coupon_id = str(data.get("coupon_attempt_id") or _stable_id("coupon", data))
-        if coupon_id in record.emitted_coupon_ids:
+        fingerprint = _fingerprint(data)
+        if record.emitted_coupon_fingerprints.get(coupon_id) == fingerprint:
             return
-        record.emitted_coupon_ids.add(coupon_id)
         await self._transition(record, RunStatus.COUPON_TESTING)
         verified = data.get("verified") is True
         evidence_ids = [str(value) for value in data.get("evidence_ids", [])]
@@ -1158,18 +1203,24 @@ class RunManager:
         status = raw_status if raw_status in _COUPON_STATUSES else "rejected"
         if rejection_reason == "technical_failure":
             status = "technical_failure"
+        offer_id = str(
+            data.get("offer_id") or next(iter(record.emitted_offer_ids), _stable_id("offer", data))
+        )
         await self.control.emit(
             record.run_id,
             "coupon.attempted",
             {
                 "couponAttemptId": coupon_id,
-                "offerId": str(data.get("offer_id") or _stable_id("offer", data)),
+                "offerId": offer_id,
                 "status": "verified" if verified else status,
                 "rejectionReason": None if verified else rejection_reason,
                 "evidenceIds": evidence_ids,
+                "coupon": _coupon_event_data(data),
             },
             status=RunStatus.COUPON_TESTING,
         )
+        record.emitted_coupon_ids.add(coupon_id)
+        record.emitted_coupon_fingerprints[coupon_id] = fingerprint
 
     async def _transition(self, record: RunRecord, status: RunStatus) -> None:
         if record.status is status:
@@ -1360,16 +1411,257 @@ def _merchant_domain(merchant: Any) -> str | None:
     return None
 
 
+def _offer_event_data(
+    category: Category | None,
+    data: dict[str, Any],
+    validity: str,
+) -> dict[str, Any]:
+    """Map sanitized or incremental model discoveries to the public offer contract."""
+    resolved_category = category or Category.RETAIL
+    details = data.get("details") if isinstance(data.get("details"), dict) else {}
+    merchant_domain = (
+        _merchant_domain(data.get("merchant"))
+        or _merchant_domain(data.get("merchant_domain"))
+        or next(iter(_START_URLS[resolved_category]))
+    )
+    source_url = _http_url(data.get("url")) or _START_URLS[resolved_category].get(
+        merchant_domain,
+        f"https://{merchant_domain}/",
+    )
+    exact = data.get("exact_match") is True
+    match_confidence = _bounded_confidence(data.get("match_confidence"), 1 if exact else 0)
+    incomplete_reason = _nullable_text(data.get("incomplete_reason"))
+    price = {
+        "itemSubtotal": _money_text(data.get("subtotal")) or "0.00",
+        "deliveryFee": _money_text(data.get("delivery_fee")),
+        "serviceFee": _money_text(data.get("service_fee")),
+        "bookingFee": _money_text(data.get("booking_fee")),
+        "tax": _money_text(data.get("tax")),
+        "mandatoryFees": _mandatory_fee_event_data(data.get("mandatory_fees")),
+        "verifiedDiscount": _money_text(data.get("discount")) or "0.00",
+        "optionalTip": "0.00" if resolved_category is Category.FOOD else None,
+        "finalTotal": _money_text(data.get("total")),
+    }
+    if resolved_category is Category.RETAIL:
+        offer_details: dict[str, Any] = {
+            "kind": "retail",
+            "brand": _text(details.get("brand"), "Unknown brand"),
+            "model": _text(details.get("model"), _text(data.get("title"), "Unknown model")),
+            "variant": _nullable_text(details.get("variant")),
+            "storage": _nullable_text(details.get("storage")),
+            "size": _nullable_text(details.get("size")),
+            "color": _nullable_text(details.get("color")),
+            "quantity": _positive_int(details.get("quantity"), 1),
+            "condition": "new",
+            "deliveryEstimate": _nullable_text(details.get("delivery_estimate")),
+        }
+    elif resolved_category is Category.FOOD:
+        basis = str(details.get("proximity_basis") or "unknown")
+        if basis not in {"route_distance", "same_area", "branch_area_only", "unknown"}:
+            basis = "unknown"
+        scope = str(details.get("price_scope") or "menu_price")
+        if scope not in {"menu_price", "delivered_total"}:
+            scope = "menu_price"
+        offer_details = {
+            "kind": "food",
+            "restaurant": _text(
+                details.get("restaurant"),
+                _text(data.get("merchant"), "Unknown restaurant"),
+            ),
+            "meal": _text(details.get("meal"), _text(data.get("title"), "Unknown meal")),
+            "size": _nullable_text(details.get("meal_size")),
+            "modifiers": _string_list(details.get("required_modifiers")),
+            "rating": _number(details.get("rating")),
+            "minimumOrder": _money_text(details.get("minimum_order")),
+            "deliveryEstimate": _nullable_text(details.get("delivery_estimate")),
+            "optionalTipExcluded": True,
+            "sourceName": _text(details.get("source_name"), merchant_domain),
+            "branchArea": _nullable_text(details.get("branch_area")),
+            "distanceKm": _number(details.get("distance_km")),
+            "distanceText": _nullable_text(details.get("distance_text")),
+            "proximityBasis": basis,
+            "priceScope": scope,
+        }
+    else:
+        offer_details = {
+            "kind": "cinema",
+            "movie": _text(details.get("movie"), _text(data.get("title"), "Unknown movie")),
+            "venue": _text(details.get("venue_area"), "Unknown venue"),
+            "date": _text(details.get("date"), "Unknown date"),
+            "showtime": _text(details.get("time"), "Unknown showtime"),
+            "language": _text(details.get("language"), "Unknown language"),
+            "screenFormat": _text(details.get("screen_format"), "Unknown format"),
+            "seatCount": _positive_int(details.get("seat_count"), 1),
+            "adjacentSeats": details.get("adjacent") is True,
+            "seatType": _text(details.get("seat_type"), "Unknown seat type"),
+            "holdExpiresAt": _nullable_text(details.get("hold_expires_at")),
+        }
+    missing = _string_list(data.get("incomplete_fields"))
+    if validity == "incomplete" and not missing:
+        missing = [incomplete_reason or "unverifiedDetails"]
+    return {
+        "title": _text(data.get("title"), "Discovered offer"),
+        "sourceUrl": source_url,
+        "match": {
+            "exact": exact,
+            "confidence": match_confidence,
+            "explanation": _text(
+                data.get("match_explanation") or data.get("exclusion_reason"),
+                (
+                    "The observed product matches the requested model and variant."
+                    if exact
+                    else "The observed page did not verify every requested product attribute."
+                ),
+            ),
+        },
+        "availability": _availability(data, details),
+        "details": offer_details,
+        "price": price,
+        "exclusionReason": (
+            _nullable_text(data.get("exclusion_reason"))
+            or (
+                "The offer is outside the requested comparison." if validity == "excluded" else None
+            )
+        ),
+        "incompleteFields": missing,
+    }
+
+
+def _coupon_event_data(data: dict[str, Any]) -> dict[str, Any]:
+    before = _money_text(data.get("before_total")) or "0.00"
+    return {
+        "code": _text(data.get("code"), "Not supplied"),
+        "sourceUrl": _http_url(data.get("source_url")) or "https://www.google.com/",
+        "beforeTotal": before,
+        "afterTotal": _money_text(data.get("after_total")),
+        "verifiedDiscount": _money_text(data.get("saving")) or "0.00",
+        "message": _nullable_text(data.get("message")),
+    }
+
+
+def _mandatory_fee_event_data(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        amount = _money_text(item.get("amount"))
+        if amount is None:
+            continue
+        result.append(
+            {
+                "label": _text(item.get("label"), "Mandatory fee"),
+                "amount": amount,
+                "evidenceIds": _string_list(item.get("evidence_ids")),
+            }
+        )
+    return result
+
+
+def _availability(data: dict[str, Any], details: dict[str, Any]) -> str:
+    value = str(data.get("availability") or details.get("stock") or "").casefold()
+    if value in {"available", "in stock", "in_stock", "true"}:
+        return "available"
+    if value in {"unavailable", "out of stock", "out_of_stock", "false"}:
+        return "unavailable"
+    return "unknown"
+
+
+def _text(value: Any, fallback: str) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text[:2_000] or fallback
+
+
+def _nullable_text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text[:2_000] or None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := _nullable_text(item)) is not None]
+
+
+def _money_text(value: Any) -> str | None:
+    try:
+        if value is None:
+            return None
+        amount = Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if amount < 0:
+        return None
+    return f"{amount.quantize(Decimal('0.01')):.2f}"
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(str(value).replace(",", "").strip()) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _positive_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def _bounded_confidence(value: Any, fallback: float) -> float:
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _http_url(value: Any) -> str | None:
+    text = _nullable_text(value)
+    return text if text and text.startswith(("http://", "https://")) else None
+
+
 def _report_counts(record: RunRecord) -> dict[str, int]:
     candidates = (record.result or {}).get("candidates", record.partial_offers)
-    valid = sum(item.get("valid") is True for item in candidates)
-    incomplete = sum(bool(item.get("incomplete_reason")) for item in candidates)
-    excluded = max(0, len(candidates) - valid - incomplete)
+    validities = [_candidate_validity(item) for item in candidates]
+    valid = validities.count("valid")
+    incomplete = validities.count("incomplete")
+    excluded = validities.count("excluded")
     return {
         "validOfferCount": valid,
         "excludedOfferCount": excluded,
         "incompleteOfferCount": incomplete,
     }
+
+
+def _candidate_validity(data: dict[str, Any]) -> str:
+    if data.get("exclusion_reason"):
+        return "excluded"
+    if data.get("valid") is True:
+        return "valid"
+    if (
+        data.get("incomplete_reason")
+        or data.get("subtotal") is not None
+        or data.get("total") is not None
+    ):
+        return "incomplete"
+    return "excluded"
+
+
+def _upsert_discovery(
+    discoveries: list[dict[str, Any]],
+    data: dict[str, Any],
+    id_field: str,
+) -> None:
+    discovery_id = str(data.get(id_field) or "").strip()
+    if discovery_id:
+        for index, existing in enumerate(discoveries):
+            if str(existing.get(id_field) or "").strip() == discovery_id:
+                discoveries[index] = data
+                return
+    discoveries.append(data)
 
 
 def _attach_evidence(raw: str, evidence_ids: list[str]) -> str:
@@ -1380,143 +1672,29 @@ def _attach_evidence(raw: str, evidence_ids: list[str]) -> str:
     if not isinstance(value, dict):
         return raw
     fallback = evidence_ids[-1:] if evidence_ids else []
+    known_evidence = set(evidence_ids)
     candidates = value.get("candidates", [])
     if isinstance(candidates, list):
         for candidate in candidates:
-            if isinstance(candidate, dict) and not candidate.get("evidence_ids"):
-                candidate["evidence_ids"] = fallback
+            if isinstance(candidate, dict):
+                verified = [
+                    str(evidence_id)
+                    for evidence_id in candidate.get("evidence_ids", [])
+                    if str(evidence_id) in known_evidence
+                ]
+                candidate["evidence_ids"] = verified or fallback
     coupons = value.get("coupon_attempts", [])
     if isinstance(coupons, list):
         for coupon in coupons:
-            if isinstance(coupon, dict) and not coupon.get("evidence_ids"):
-                coupon["evidence_ids"] = fallback
+            if isinstance(coupon, dict):
+                verified = [
+                    str(evidence_id)
+                    for evidence_id in coupon.get("evidence_ids", [])
+                    if str(evidence_id) in known_evidence
+                ]
+                coupon["evidence_ids"] = verified or fallback
     return json.dumps(value, ensure_ascii=False)
 
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def _normalized_offer_snapshot(
-    record: RunRecord,
-    data: dict[str, Any],
-    validity: str,
-) -> dict[str, Any] | None:
-    source_url = str(data.get("url", "")).strip()
-    title = str(data.get("title", "")).strip()
-    details = data.get("details")
-    if not source_url or not title or not isinstance(details, dict) or record.category is None:
-        return None
-    availability = str(data.get("availability", "")).casefold()
-    if availability not in {"available", "unavailable", "unknown"}:
-        stock = details.get("stock")
-        availability = (
-            "available" if stock is True else ("unavailable" if stock is False else "unknown")
-        )
-    confidence = data.get("match_confidence", 0)
-    try:
-        match_confidence = min(1.0, max(0.0, float(confidence)))
-    except (TypeError, ValueError):
-        match_confidence = 0.0
-    return {
-        "title": title[:1_000],
-        "sourceUrl": source_url,
-        "match": {
-            "exact": data.get("exact_match") is True,
-            "confidence": match_confidence,
-            "explanation": str(
-                data.get("match_explanation")
-                or data.get("exclusion_reason")
-                or "Compared with the user's parsed hard constraints."
-            )[:1_000],
-        },
-        "availability": availability,
-        "details": _contract_offer_details(record.category, details),
-        "price": {
-            "itemSubtotal": _decimal_text(data.get("subtotal"), default="0.00"),
-            "deliveryFee": _decimal_text(data.get("delivery_fee")),
-            "serviceFee": _decimal_text(data.get("service_fee")),
-            "bookingFee": _decimal_text(data.get("booking_fee")),
-            "tax": _decimal_text(data.get("tax")),
-            "mandatoryFees": [
-                {
-                    "label": str(fee.get("label", "mandatory fee"))[:200],
-                    "amount": _decimal_text(fee.get("amount"), default="0.00"),
-                    "evidenceIds": [str(value) for value in fee.get("evidence_ids", [])],
-                }
-                for fee in data.get("mandatory_fees", [])
-                if isinstance(fee, dict)
-            ],
-            "verifiedDiscount": _decimal_text(data.get("discount"), default="0.00"),
-            "optionalTip": "0.00" if record.category is Category.FOOD else None,
-            "finalTotal": _decimal_text(data.get("total")),
-        },
-        "observedAt": _timestamp(),
-        "exclusionReason": (
-            str(data.get("exclusion_reason") or "Offer did not meet the parsed constraints.")
-            if validity == "excluded"
-            else None
-        ),
-        "incompleteFields": (
-            [str(data["incomplete_reason"])] if data.get("incomplete_reason") else []
-        ),
-    }
-
-
-def _contract_offer_details(category: Category, details: dict[str, Any]) -> dict[str, Any]:
-    if category is Category.RETAIL:
-        return {
-            "kind": "retail",
-            "brand": str(details.get("brand", "")),
-            "model": str(details.get("model", "")),
-            "variant": details.get("variant"),
-            "storage": details.get("storage"),
-            "size": details.get("size"),
-            "color": details.get("color"),
-            "quantity": details.get("quantity"),
-            "condition": str(details.get("seller_condition", "")).casefold(),
-            "deliveryEstimate": details.get("delivery_estimate"),
-        }
-    if category is Category.FOOD:
-        return {
-            "kind": "food",
-            "restaurant": str(details.get("restaurant", "")),
-            "meal": str(details.get("meal", "")),
-            "size": details.get("meal_size"),
-            "modifiers": details.get("required_modifiers", []),
-            "rating": details.get("rating"),
-            "minimumOrder": details.get("minimum_order"),
-            "deliveryEstimate": details.get("delivery_estimate"),
-            "optionalTipExcluded": details.get("tip_excluded") is True,
-            "sourceName": details.get("source_name"),
-            "branchArea": details.get("branch_area"),
-            "distanceKm": details.get("distance_km"),
-            "distanceText": details.get("distance_text"),
-            "proximityBasis": details.get("proximity_basis"),
-            "priceScope": details.get("price_scope"),
-        }
-    return {
-        "kind": "cinema",
-        "movie": str(details.get("movie", "")),
-        "venue": str(details.get("venue", details.get("venue_area", ""))),
-        "date": details.get("date"),
-        "showtime": details.get("showtime", details.get("time")),
-        "language": str(details.get("language", "")),
-        "screenFormat": str(details.get("screen_format", "")),
-        "seatCount": details.get("seat_count"),
-        "adjacentSeats": details.get("adjacent") is True,
-        "seatType": str(details.get("seat_type", "")),
-        "holdExpiresAt": details.get("hold_expires_at"),
-    }
-
-
-def _decimal_text(value: Any, *, default: str | None = None) -> str | None:
-    if value is None:
-        return default
-    try:
-        amount = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return default
-    if amount < 0:
-        return default
-    return f"{amount.quantize(Decimal('0.01')):.2f}"

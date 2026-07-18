@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class ResponsesClient(Protocol):
@@ -106,10 +109,18 @@ class OpenRouterVisionFallbackLocator:
                 tools=[_REPORT_TARGET_TOOL],
                 truncation="auto",
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "OpenRouter visual fallback request failed error_type=%s",
+                type(exc).__name__,
+            )
             return None
         payload = _target_payload(response)
         if payload is None or payload.get("status") != "located":
+            logger.info(
+                "OpenRouter visual fallback produced no target status=%s",
+                payload.get("status") if payload else "invalid_response",
+            )
             return None
         try:
             x = int(payload["x"])

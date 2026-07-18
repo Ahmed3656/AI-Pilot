@@ -20,8 +20,9 @@ class DeterministicProviderTestAdapter:
         executor: BrowserActionExecutor,
         address_handle: str | None = None,
         discovery_sink: Any = None,
+        request_understanding: dict[str, Any] | None = None,
     ) -> str:
-        del query, address_handle, discovery_sink
+        del query, address_handle, discovery_sink, request_understanding
         await executor.execute({"type": "screenshot"})
         details: dict[str, Any]
         if category is Category.RETAIL:

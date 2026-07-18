@@ -50,6 +50,8 @@ export class ShoppingReportService {
       buckets[classification].push(offerView(offer, classification));
     }
     buckets.valid.sort(compareOffers);
+    buckets.incomplete.sort(compareObservedOffers);
+    buckets.excluded.sort(compareObservedOffers);
 
     const couponAttempts = data.couponAttempts.map((item) => ({
       id: item.id,
@@ -328,6 +330,25 @@ function offerSuitability(offer: ReturnType<typeof offerView>): number {
     value.length === 10 ? `${value}T23:59:59+03:00` : value,
   );
   return Number.isNaN(timestamp) ? Number.MAX_SAFE_INTEGER : timestamp;
+}
+
+function compareObservedOffers(
+  left: ReturnType<typeof offerView>,
+  right: ReturnType<typeof offerView>,
+): number {
+  const leftPrice = observedPrice(left);
+  const rightPrice = observedPrice(right);
+  if (leftPrice !== rightPrice) return leftPrice - rightPrice;
+  const suitability = offerSuitability(left) - offerSuitability(right);
+  if (suitability !== 0) return suitability;
+  if (left.match.confidence !== right.match.confidence)
+    return right.match.confidence - left.match.confidence;
+  return left.id.localeCompare(right.id);
+}
+
+function observedPrice(offer: ReturnType<typeof offerView>): number {
+  const value = offer.price.finalTotal ?? offer.price.itemSubtotal;
+  return MONEY.test(value) ? Number(cents(value)) : Number.MAX_SAFE_INTEGER;
 }
 
 function stringArray(value: unknown): string[] {

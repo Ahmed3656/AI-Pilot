@@ -370,9 +370,18 @@ interface NormalizedOfferSnapshot {
   availability: 'available' | 'unavailable' | 'unknown';
   details: OfferDetails;
   price: PriceBreakdown;
-  observedAt: Timestamp;
+  observedAt?: Timestamp;
   exclusionReason: string | null;
   incompleteFields: string[];
+}
+
+interface CouponAttemptSnapshot {
+  code: string;
+  sourceUrl: string;
+  beforeTotal: Money;
+  afterTotal: Money | null;
+  verifiedDiscount: Money;
+  message: string | null;
 }
 
 interface EventPayloadMap {
@@ -449,6 +458,7 @@ interface EventPayloadMap {
     status: CouponStatus;
     rejectionReason: CouponRejectionReason | null;
     evidenceIds: string[];
+    coupon: CouponAttemptSnapshot;
   };
   'evidence.captured': {
     evidenceId: string;
@@ -462,7 +472,6 @@ interface EventPayloadMap {
     merchantAttemptId: string | null;
     evidenceIds: string[];
     requiresUserInput?: boolean;
-  };
   'control.claimed': {
     leaseId: string;
     holderUserId: string;
@@ -505,6 +514,10 @@ category details, price breakdown, observation time, exclusion reason, and incom
 to materialize `OfferReport`. It contains no address, authentication, payment, cookie, or other
 secret fields. Older/minimal producers may omit it; the API then preserves the discovery as an
 incomplete offer instead of inventing economic details.
+
+`CouponAttemptSnapshot` carries the public code and source URL plus the exact before total,
+after total, verified discount, and optional result message. It contains no checkout credentials
+or payment data.
 
 The named supporting enums are defined in the report section. Payloads MUST NOT contain address fields or values, viewer/internal tokens, cookies, authorization headers, payment data, or unredacted screenshot bytes.
 

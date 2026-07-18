@@ -266,6 +266,17 @@ export interface EventPayloadMap {
     validity: 'valid' | 'excluded' | 'incomplete';
     merchantAttemptId: string;
     evidenceIds: string[];
+    offer?: Pick<
+      OfferReport,
+      | 'title'
+      | 'sourceUrl'
+      | 'match'
+      | 'availability'
+      | 'details'
+      | 'price'
+      | 'exclusionReason'
+      | 'incompleteFields'
+    > & { observedAt?: string };
   };
   'coupon.attempted': {
     couponAttemptId: string;
@@ -273,6 +284,15 @@ export interface EventPayloadMap {
     status: CouponStatus;
     rejectionReason: CouponRejectionReason | null;
     evidenceIds: string[];
+    coupon: Pick<
+      CouponAttemptReport,
+      | 'code'
+      | 'sourceUrl'
+      | 'beforeTotal'
+      | 'afterTotal'
+      | 'verifiedDiscount'
+      | 'message'
+    >;
   };
   'evidence.captured': {
     evidenceId: string;

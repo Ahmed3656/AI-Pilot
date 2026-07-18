@@ -8,10 +8,11 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { MessageKey, useLocalization } from '@/localization';
 import { ApprovalCard } from '../components/ApprovalCard';
+import { CandidateCard } from '../components/CandidateCard';
 import { RemoteBrowser } from '../components/RemoteBrowser';
 import { RunTimeline } from '../components/RunTimeline';
 import { LanguageToggle, SectionHeading } from '../components/ShoppingControls';
-import { warningListKey } from '../report';
+import { presentOffers, warningListKey } from '../report';
 import {
   approveDomains,
   approveSeatHold,
@@ -55,6 +56,15 @@ function latestExpiredLease(events: EventEnvelope[]): string | undefined {
   return undefined;
 }
 
+function latestReportEvent(events: EventEnvelope[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === 'offer.recorded' || event.type === 'report.updated')
+      return event.id;
+  }
+  return undefined;
+}
+
 export function ShoppingRunScreen() {
   const params = useLocalSearchParams<{ id: string | string[] }>();
   const runId = Array.isArray(params.id) ? params.id[0] : params.id;
@@ -75,6 +85,7 @@ export function ShoppingRunScreen() {
         : false,
     retry: false,
   });
+  const refetchReport = report.refetch;
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const loadErrorShown = useRef(false);
 
@@ -86,6 +97,13 @@ export function ShoppingRunScreen() {
       loadErrorShown.current = false;
     }
   }, [error, showToast, snapshot, t]);
+
+  const reportEventId = snapshot
+    ? latestReportEvent(snapshot.events)
+    : undefined;
+  useEffect(() => {
+    if (reportEventId) void refetchReport();
+  }, [refetchReport, reportEventId]);
 
   const runAction = async (
     action: 'pause' | 'resume' | 'cancel' | 'complete',
@@ -127,6 +145,7 @@ export function ShoppingRunScreen() {
     ? ['completed', 'cancelled', 'failed'].includes(snapshot.status)
     : false;
   const pendingAction = snapshot?.pendingAction;
+  const liveOffers = report.data ? presentOffers(report.data) : [];
 
   return (
     <Screen>
@@ -317,6 +336,20 @@ export function ShoppingRunScreen() {
                 {snapshot.failure.code} · {snapshot.failure.message}
               </Text>
             </Card>
+          ) : null}
+
+          {liveOffers.length ? (
+            <View style={styles.section}>
+              <SectionHeading title={t('offers')} />
+              {liveOffers.map(({ offer, validity, isWinner }) => (
+                <CandidateCard
+                  isWinner={isWinner}
+                  key={offer.id}
+                  offer={offer}
+                  validity={validity}
+                />
+              ))}
+            </View>
           ) : null}
 
           {report.data?.merchantAttempts.length ? (

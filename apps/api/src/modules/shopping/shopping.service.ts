@@ -866,12 +866,23 @@ export class ShoppingService implements OnModuleDestroy {
     }
     if (dto.type === 'offer.recorded') {
       const data = await this.store.report(run.id);
-      if (
-        !data.merchantAttempts.some(
-          (attempt) => attempt.id === dto.payload.merchantAttemptId,
+      const attempt = data.merchantAttempts.find(
+        (candidate) => candidate.id === dto.payload.merchantAttemptId,
+      );
+      if (!attempt) this.missingEventReference('Merchant attempt');
+      if (dto.payload.offer !== undefined) {
+        const offer = dto.payload.offer as Record<string, unknown>;
+        const details = offer.details as Record<string, unknown>;
+        if (
+          details.kind !== attempt.category ||
+          !urlBelongsToDomain(String(offer.sourceUrl), attempt.merchantDomain)
         )
-      )
-        this.missingEventReference('Merchant attempt');
+          throw new ContractException(
+            'VALIDATION_ERROR',
+            400,
+            'Offer category or source does not match its merchant attempt',
+          );
+      }
       this.assertEvidenceReferences(data.evidence, dto.payload.evidenceIds);
     }
     if (dto.type === 'coupon.attempted') {
@@ -879,19 +890,6 @@ export class ShoppingService implements OnModuleDestroy {
       if (!data.offers.some((offer) => offer.id === dto.payload.offerId))
         this.missingEventReference('Offer');
       this.assertEvidenceReferences(data.evidence, dto.payload.evidenceIds);
-      const kinds = new Set(
-        data.evidence
-          .filter((item) =>
-            (dto.payload.evidenceIds as string[]).includes(item.id),
-          )
-          .map((item) => item.kind),
-      );
-      if (!kinds.has('coupon_source') || !kinds.has('coupon_result'))
-        throw new ContractException(
-          'VALIDATION_ERROR',
-          400,
-          'Coupon evidence must include source and result artifacts',
-        );
     }
   }
 
@@ -1094,19 +1092,20 @@ export class ShoppingService implements OnModuleDestroy {
       case 'coupon.attempted': {
         const offer = await this.store.findOffer(String(dto.payload.offerId));
         if (!offer) break;
+        const coupon = dto.payload.coupon as Record<string, unknown>;
         await this.store.saveCouponAttempt({
           id: String(dto.payload.couponAttemptId),
           runId: run.id,
           offerId: offer.id,
           merchantDomain: offer.merchantDomain,
-          code: '[not supplied by event]',
-          sourceUrl: `https://${offer.merchantDomain}/`,
+          code: String(coupon.code),
+          sourceUrl: String(coupon.sourceUrl),
           status: String(dto.payload.status),
-          beforeTotal: '0.00',
-          afterTotal: null,
-          verifiedDiscount: '0.00',
+          beforeTotal: String(coupon.beforeTotal),
+          afterTotal: coupon.afterTotal as string | null,
+          verifiedDiscount: String(coupon.verifiedDiscount),
           rejectionReason: dto.payload.rejectionReason as string | null,
-          message: 'Coupon economics were not included in the event envelope.',
+          message: coupon.message as string | null,
           attemptedAt: new Date(dto.timestamp),
           evidenceIds: dto.payload.evidenceIds as string[],
         });
@@ -1546,6 +1545,7 @@ const EVENT_KEYS: Record<
       'status',
       'rejectionReason',
       'evidenceIds',
+      'coupon',
     ],
   },
   'evidence.captured': {
@@ -1697,7 +1697,7 @@ function assertEventPayload(
         ) ||
         !isString(payload.merchantAttemptId) ||
         !isStringArray(payload.evidenceIds, true) ||
-        (payload.offer !== undefined && !isObjectRecord(payload.offer))
+        (payload.offer !== undefined && !exactOfferEventData(payload.offer))
       )
         invalidEvent(type);
       break;
@@ -1709,7 +1709,8 @@ function assertEventPayload(
           String(payload.status),
         ) ||
         !nullableString(payload.rejectionReason) ||
-        !isStringArray(payload.evidenceIds, true)
+        !isStringArray(payload.evidenceIds, true) ||
+        !exactCouponEventData(payload.coupon)
       )
         invalidEvent(type);
       break;
@@ -1824,6 +1825,244 @@ function exactMerchant(value: unknown): boolean {
   );
 }
 
+function exactOfferEventData(value: unknown): boolean {
+  const keys = [
+    'availability',
+    'details',
+    'exclusionReason',
+    'incompleteFields',
+    'match',
+    'price',
+    'sourceUrl',
+    'title',
+  ];
+  if (
+    !hasExactKeys(value, keys) &&
+    !hasExactKeys(value, [...keys, 'observedAt'])
+  )
+    return false;
+  const offer = value as Record<string, unknown>;
+  const match = offer.match;
+  const price = offer.price;
+  return (
+    isString(offer.title) &&
+    isHttpUrl(offer.sourceUrl) &&
+    ['available', 'unavailable', 'unknown'].includes(
+      String(offer.availability),
+    ) &&
+    hasExactKeys(match, ['confidence', 'exact', 'explanation']) &&
+    typeof (match as Record<string, unknown>).exact === 'boolean' &&
+    typeof (match as Record<string, unknown>).confidence === 'number' &&
+    Number.isFinite((match as Record<string, unknown>).confidence) &&
+    Number((match as Record<string, unknown>).confidence) >= 0 &&
+    Number((match as Record<string, unknown>).confidence) <= 1 &&
+    isString((match as Record<string, unknown>).explanation) &&
+    exactOfferDetails(offer.details) &&
+    exactPriceBreakdown(price) &&
+    (offer.observedAt === undefined || isTimestamp(offer.observedAt)) &&
+    nullableString(offer.exclusionReason) &&
+    isStringArray(offer.incompleteFields)
+  );
+}
+
+function exactOfferDetails(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const details = value as Record<string, unknown>;
+  if (details.kind === 'retail')
+    return (
+      hasExactKeys(details, [
+        'brand',
+        'color',
+        'condition',
+        'deliveryEstimate',
+        'kind',
+        'model',
+        'quantity',
+        'size',
+        'storage',
+        'variant',
+      ]) &&
+      isString(details.brand) &&
+      isString(details.model) &&
+      [details.variant, details.storage, details.size, details.color].every(
+        nullableString,
+      ) &&
+      Number.isInteger(details.quantity) &&
+      Number(details.quantity) > 0 &&
+      details.condition === 'new' &&
+      nullableString(details.deliveryEstimate)
+    );
+  if (details.kind === 'food')
+    return (
+      hasExactKeys(details, [
+        'branchArea',
+        'deliveryEstimate',
+        'distanceKm',
+        'distanceText',
+        'kind',
+        'meal',
+        'minimumOrder',
+        'modifiers',
+        'optionalTipExcluded',
+        'priceScope',
+        'proximityBasis',
+        'rating',
+        'restaurant',
+        'size',
+        'sourceName',
+      ]) &&
+      isString(details.restaurant) &&
+      isString(details.meal) &&
+      nullableString(details.size) &&
+      isStringArray(details.modifiers) &&
+      nullableFiniteNumber(details.rating) &&
+      nullableMoney(details.minimumOrder) &&
+      nullableString(details.deliveryEstimate) &&
+      details.optionalTipExcluded === true &&
+      isString(details.sourceName) &&
+      nullableString(details.branchArea) &&
+      nullableFiniteNumber(details.distanceKm) &&
+      nullableString(details.distanceText) &&
+      ['route_distance', 'same_area', 'branch_area_only', 'unknown'].includes(
+        String(details.proximityBasis),
+      ) &&
+      ['menu_price', 'delivered_total'].includes(String(details.priceScope))
+    );
+  if (details.kind === 'cinema')
+    return (
+      hasExactKeys(details, [
+        'adjacentSeats',
+        'date',
+        'holdExpiresAt',
+        'kind',
+        'language',
+        'movie',
+        'screenFormat',
+        'seatCount',
+        'seatType',
+        'showtime',
+        'venue',
+      ]) &&
+      [
+        details.movie,
+        details.venue,
+        details.date,
+        details.showtime,
+        details.language,
+        details.screenFormat,
+        details.seatType,
+      ].every(isString) &&
+      Number.isInteger(details.seatCount) &&
+      Number(details.seatCount) > 0 &&
+      typeof details.adjacentSeats === 'boolean' &&
+      nullableString(details.holdExpiresAt)
+    );
+  return false;
+}
+
+function exactPriceBreakdown(value: unknown): boolean {
+  if (
+    !hasExactKeys(value, [
+      'bookingFee',
+      'deliveryFee',
+      'finalTotal',
+      'itemSubtotal',
+      'mandatoryFees',
+      'optionalTip',
+      'serviceFee',
+      'tax',
+      'verifiedDiscount',
+    ])
+  )
+    return false;
+  const price = value as Record<string, unknown>;
+  return (
+    isMoney(price.itemSubtotal) &&
+    [
+      price.deliveryFee,
+      price.serviceFee,
+      price.bookingFee,
+      price.tax,
+      price.finalTotal,
+    ].every(nullableMoney) &&
+    Array.isArray(price.mandatoryFees) &&
+    price.mandatoryFees.every(
+      (fee) =>
+        hasExactKeys(fee, ['amount', 'evidenceIds', 'label']) &&
+        isString((fee as Record<string, unknown>).label) &&
+        isMoney((fee as Record<string, unknown>).amount) &&
+        isStringArray((fee as Record<string, unknown>).evidenceIds),
+    ) &&
+    isMoney(price.verifiedDiscount) &&
+    (price.optionalTip === null || price.optionalTip === '0.00')
+  );
+}
+
+function exactCouponEventData(value: unknown): boolean {
+  if (
+    !hasExactKeys(value, [
+      'afterTotal',
+      'beforeTotal',
+      'code',
+      'message',
+      'sourceUrl',
+      'verifiedDiscount',
+    ])
+  )
+    return false;
+  const coupon = value as Record<string, unknown>;
+  return (
+    isString(coupon.code) &&
+    isHttpUrl(coupon.sourceUrl) &&
+    isMoney(coupon.beforeTotal) &&
+    nullableMoney(coupon.afterTotal) &&
+    isMoney(coupon.verifiedDiscount) &&
+    nullableString(coupon.message)
+  );
+}
+
+function hasExactKeys(value: unknown, keys: string[]): boolean {
+  return (
+    Boolean(value) &&
+    typeof value === 'object' &&
+    Object.keys(value as Record<string, unknown>)
+      .sort()
+      .join(',') === [...keys].sort().join(',')
+  );
+}
+
+function isMoney(value: unknown): boolean {
+  return typeof value === 'string' && /^\d+(?:\.\d{2})$/.test(value);
+}
+
+function nullableMoney(value: unknown): boolean {
+  return value === null || isMoney(value);
+}
+
+function nullableFiniteNumber(value: unknown): boolean {
+  return (
+    value === null || (typeof value === 'number' && Number.isFinite(value))
+  );
+}
+
+function isHttpUrl(value: unknown): boolean {
+  if (!isString(value)) return false;
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function urlBelongsToDomain(value: string, domain: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+}
+
 function containsSecretKey(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsSecretKey);
   if (!value || typeof value !== 'object') return false;
@@ -1834,7 +2073,6 @@ function containsSecretKey(value: unknown): boolean {
       ) || containsSecretKey(item),
   );
 }
-
 function incompleteDetails(
   category: ShoppingCategory,
 ): Record<string, unknown> {

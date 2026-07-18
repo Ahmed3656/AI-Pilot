@@ -1029,6 +1029,41 @@ describe('DealPilot canonical API contract (e2e)', () => {
       validity: 'incomplete',
       merchantAttemptId: attemptId,
       evidenceIds: [evidenceId],
+      offer: {
+        title: 'Deterministic integration laptop',
+        sourceUrl: 'https://www.amazon.eg/dp/test-laptop',
+        match: {
+          exact: true,
+          confidence: 1,
+          explanation: 'The requested model is visible on the product page.',
+        },
+        availability: 'available',
+        details: {
+          kind: 'retail',
+          brand: 'Test',
+          model: 'Integration Laptop',
+          variant: null,
+          storage: null,
+          size: null,
+          color: null,
+          quantity: 1,
+          condition: 'new',
+          deliveryEstimate: null,
+        },
+        price: {
+          itemSubtotal: '25000.00',
+          deliveryFee: null,
+          serviceFee: null,
+          bookingFee: null,
+          tax: null,
+          mandatoryFees: [],
+          verifiedDiscount: '0.00',
+          optionalTip: null,
+          finalTotal: null,
+        },
+        exclusionReason: null,
+        incompleteFields: ['deliveryFee', 'finalTotal'],
+      },
     });
     await postEvent(runId, 'comparing', 'offer.recorded', {
       offerId: 'offer:materialized-samsung-a55',
@@ -1072,7 +1107,27 @@ describe('DealPilot canonical API contract (e2e)', () => {
         incompleteFields: [],
       },
     });
-    await postEvent(runId, 'comparing', 'merchant.attempt_completed', {
+    await postEvent(runId, 'coupon_testing', 'run.status_changed', {
+      from: 'comparing',
+      to: 'coupon_testing',
+      reasonCode: null,
+    });
+    await postEvent(runId, 'coupon_testing', 'coupon.attempted', {
+      couponAttemptId: 'coupon:materialized-test',
+      offerId: 'offer:materialized-samsung-a55',
+      status: 'rejected',
+      rejectionReason: 'not_eligible',
+      evidenceIds: [evidenceId],
+      coupon: {
+        code: 'A55DEAL',
+        sourceUrl: 'https://www.amazon.eg/coupons/a55deal',
+        beforeTotal: '24495.00',
+        afterTotal: null,
+        verifiedDiscount: '0.00',
+        message: 'The code did not apply to this product.',
+      },
+    });
+    await postEvent(runId, 'coupon_testing', 'merchant.attempt_completed', {
       attemptId,
       outcome: 'unavailable',
       failureCode: 'MERCHANT_UNAVAILABLE',
@@ -1087,6 +1142,8 @@ describe('DealPilot canonical API contract (e2e)', () => {
         id: offerId,
         merchantAttemptId: attemptId,
         evidenceIds: [evidenceId],
+        title: 'Deterministic integration laptop',
+        price: expect.objectContaining({ itemSubtotal: '25000.00' }),
       }),
     ]);
     expect(report.body.validOffers).toEqual([
@@ -1099,6 +1156,18 @@ describe('DealPilot canonical API contract (e2e)', () => {
           storage: '256 GB',
           deliveryEstimate: '2026-07-19',
         }),
+      }),
+    ]);
+    expect(report.body.couponAttempts).toEqual([
+      expect.objectContaining({
+        id: 'coupon:materialized-test',
+        code: 'A55DEAL',
+        sourceUrl: 'https://www.amazon.eg/coupons/a55deal',
+        beforeTotal: '24495.00',
+        afterTotal: null,
+        verifiedDiscount: '0.00',
+        rejectionReason: 'not_eligible',
+        message: 'The code did not apply to this product.',
       }),
     ]);
     expect(report.body.partialFailures).toEqual([

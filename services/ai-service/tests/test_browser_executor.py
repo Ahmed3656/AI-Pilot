@@ -13,6 +13,7 @@ from agent_ai.browser.selenium_remote import (
     SecretRedactor,
     SeleniumRemoteBrowser,
     VisualFallbackRequired,
+    WorkflowBoundaryReached,
 )
 from agent_ai.models import ApprovalType, Category, PauseReason, RunStatus
 
@@ -154,7 +155,7 @@ async def test_secret_is_rejected_outside_address_field() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capture_pauses_and_returns_last_safe_screenshot() -> None:
+async def test_payment_page_is_expected_boundary_without_user_pause() -> None:
     class PausingBrowser(FakeBrowser):
         def __init__(self) -> None:
             super().__init__({"name": "search", "aria_label": "Search"})
@@ -194,8 +195,11 @@ async def test_capture_pauses_and_returns_last_safe_screenshot() -> None:
     assert events.uploads[0][2] == b"original-resolution-png"
     browser.should_pause = True
 
-    assert await executor.capture() == safe_screenshot
-    assert [exc.reason_code for exc in pauses] == [PauseReason.BROWSER_WARNING]
+    with pytest.raises(WorkflowBoundaryReached, match="Payment details page") as boundary:
+        await executor.capture()
+    assert boundary.value.boundary == "payment"
+    assert executor.last_screenshot == safe_screenshot
+    assert pauses == []
 
 
 @pytest.mark.asyncio
@@ -373,6 +377,38 @@ async def test_matching_click_target_ignores_generic_control_words() -> None:
     )
 
     await executor.execute({"type": "click", "x": 10, "y": 20, "target": "Search button"})
+
+    assert browser.clicks == [(10, 20)]
+
+
+@pytest.mark.asyncio
+async def test_visual_locator_label_may_expand_visible_button_text() -> None:
+    browser = FakeBrowser(
+        {
+            "tag": "button",
+            "text": "Continue",
+            "interactive": True,
+            "disabled": False,
+        }
+    )
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+    )
+
+    await executor.execute(
+        {
+            "type": "click",
+            "x": 10,
+            "y": 20,
+            "target": "Continue checkout",
+        }
+    )
 
     assert browser.clicks == [(10, 20)]
 

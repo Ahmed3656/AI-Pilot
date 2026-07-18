@@ -291,12 +291,23 @@ def inspect_page_for_pause(
     *,
     visible_sensitive_control: bool = False,
     visible_login_control: bool = False,
+    visible_captcha_challenge: bool | None = None,
 ) -> None:
     folded = " ".join(page_text.casefold().split())
     path = urlsplit(current_url).path.casefold()
     if current_url.startswith(("chrome-error://", "chrome://interstitial", "about:certerror")):
         raise PauseRequired(PauseReason.BROWSER_WARNING, "Browser security warning detected")
-    if any(marker in folded for marker in _CAPTCHA_MARKERS):
+    captcha_path = bool(
+        re.search(r"/(?:[^/]*captcha[^/]*|human-verification|challenge)(?:/|$)", path)
+        or path.startswith("/sorry/")
+    )
+    # Selenium supplies an explicit rendered-visibility result. The text fallback is retained
+    # for non-browser callers and fixtures, but production must not pause merely because a
+    # dormant script, hidden widget, or legal notice contains the word "captcha".
+    captcha_in_text = visible_captcha_challenge is None and any(
+        marker in folded for marker in _CAPTCHA_MARKERS
+    )
+    if visible_captcha_challenge is True or captcha_path or captcha_in_text:
         raise PauseRequired(
             PauseReason.CAPTCHA,
             "CAPTCHA/human verification detected",

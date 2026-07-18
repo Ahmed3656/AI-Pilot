@@ -183,6 +183,30 @@ class FailAgent(FakeAgent):
         raise RuntimeError("provider failed before producing results")
 
 
+class UnderstandingAgent(FakeAgent):
+    received_understanding: dict[str, Any] | None = None
+
+    async def understand_request(self, **_: Any) -> dict[str, Any]:
+        return {
+            "search_query": "Samsung Galaxy S24 Ultra 256GB black",
+            "target": {
+                "name": "Samsung Galaxy S24 Ultra",
+                "brand": "Samsung",
+                "model": "Galaxy S24 Ultra",
+                "variant": "256GB black",
+                "specifications": ["256GB", "black"],
+            },
+            "constraints": {"budget_max_egp": 50000},
+            "comparison_priorities": ["exact_match", "lowest_total"],
+            "requires_checkout": False,
+            "requires_coupons": False,
+        }
+
+    async def run(self, **kwargs: Any) -> str:
+        type(self).received_understanding = kwargs["request_understanding"]
+        return await super().run(**kwargs)
+
+
 class ParallelMerchantAgent:
     last_response_id = "parallel-response"
     active = 0
@@ -325,7 +349,7 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     )
     await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
 
-    assert browser.urls == ["https://www.amazon.eg/s?k=Find+an+exact+phone"]
+    assert browser.urls == ["https://www.amazon.eg/s?k=exact+phone"]
     assert browser.connect_count == 1
     assert browser.closed is False
     assert browser.session_id == session_id
@@ -378,6 +402,61 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     assert browser.closed is True
     assert record.address_handle is None
     assert any(event_type == "offer.recorded" for _, event_type, _, _ in control.events)
+    final_offer = next(
+        payload
+        for _, event_type, payload, _ in control.events
+        if event_type == "offer.recorded" and payload["offer"]["title"] == "Exact phone"
+    )
+    assert final_offer["offer"]["price"]["finalTotal"] == "1025.00"
+    assert final_offer["offer"]["details"]["model"] == "X"
+
+
+@pytest.mark.asyncio
+async def test_model_request_understanding_drives_search_url_and_worker_context() -> None:
+    control = FakeControl()
+    browser = FakeBrowser()
+    UnderstandingAgent.received_understanding = None
+    manager = RunManager(
+        Settings(
+            environment="development",
+            internal_token="token",
+            openrouter_api_key="fake",
+        ),
+        control,  # type: ignore[arg-type]
+        agent_factory=UnderstandingAgent,
+        browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]
+    )
+    request = _request(
+        query=(
+            "Bro please find the Samsung Galaxy S24 Ultra with 256GB in black under 50k, "
+            "compare every merchant and include delivery"
+        )
+    )
+    await manager.create_run(request, "run-1")
+    await manager.start("run-1")
+    await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
+    record = manager.get_record("run-1")
+    await manager.command(
+        "run-1",
+        _command(
+            "approve-understood",
+            "run-1",
+            "approve_domains",
+            {
+                "approvalId": "approval-understood",
+                "requestId": record.domain_request_id,
+                "domains": ["amazon.eg"],
+            },
+        ),
+        "approve-understood",
+    )
+    await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
+
+    assert browser.urls == ["https://www.amazon.eg/s?k=Samsung+Galaxy+S24+Ultra+256GB+black"]
+    assert UnderstandingAgent.received_understanding is not None
+    assert UnderstandingAgent.received_understanding["target"]["model"] == "Galaxy S24 Ultra"
+    assert UnderstandingAgent.received_understanding["constraints"] == {"budget_max_egp": 50000}
+    await manager.aclose()
 
 
 @pytest.mark.asyncio
@@ -647,6 +726,14 @@ async def test_incremental_coupon_event_values_are_contract_safe() -> None:
     ]
     assert payloads[0]["status"] == "rejected"
     assert payloads[0]["rejectionReason"] == "unknown"
+    assert payloads[0]["coupon"] == {
+        "code": "Not supplied",
+        "sourceUrl": "https://www.google.com/",
+        "beforeTotal": "0.00",
+        "afterTotal": None,
+        "verifiedDiscount": "0.00",
+        "message": None,
+    }
     assert payloads[1]["status"] == "technical_failure"
     assert payloads[1]["rejectionReason"] == "technical_failure"
     await manager.aclose()

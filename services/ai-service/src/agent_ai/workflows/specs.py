@@ -27,9 +27,10 @@ Book now, or equivalent control. Stop at the last review screen before the final
 For every click, provide `target` with the visible text or accessible label you intend to use.
 If the tool returns `vision_localizer`, the separate fallback detector already recovered the
 changed control. If it returns `visual_retry`, re-read the fresh screenshot and choose new
-coordinates;
-do not repeat stale coordinates. If it returns `human_takeover`, re-observe the page and continue
-from the state left by the user. Never visually bypass CAPTCHA, login, OTP, or authorization.
+coordinates; do not repeat stale coordinates. If it returns `action_skipped`, the semantic and
+configured visual locators both failed: use rendered page text, a verified link, or a different
+safe route, record whatever was observed, and continue. Never ask the user to repair an ordinary
+missed click. Never visually bypass CAPTCHA, login, OTP, or authorization.
 Use semantic address placeholders exactly as {{secret:HANDLE}}; never ask for or expose the
 resolved value. Inspect rendered choices carefully and do not infer unavailable facts.
 For speed, prefer dealpilot_page_text and its approved-domain links before repeated scrolling or
@@ -45,24 +46,38 @@ Call record_dealpilot_discovery immediately for every merchant attempt, partial 
 result, and warning. Do not include secrets or screenshot bytes in those calls. Finish with
 JSON only. Include `candidates`, each with merchant, title, url, exact_match, valid, subtotal,
 delivery_fee, service_fee, booking_fee, tax, mandatory_fees, discount, total, currency (EGP),
-availability, match_confidence (0..1), evidence_ids, and details. Components that cannot apply
-are "0.00"; a component that may apply but was not verified is null. Include `coupon_attempts`,
-`stopped_before`, and `notes`. A missing amount must be null, never guessed. The reported total
-must equal subtotal + delivery + service + booking + tax + mandatory fees - verified discount.
+offer_id, availability, match_confidence (0..1), evidence_ids, and details. Create a stable
+offer_id when an offer is first observed and reuse it for every enriched update and in the final
+candidate. Components that cannot apply are "0.00"; a component that may apply but was not
+verified is null. Include `coupon_attempts`, `stopped_before`, and `notes`. A missing amount must
+be null, never guessed. The reported total must equal subtotal + delivery + service + booking +
+tax + mandatory fees - verified discount.
+
+Results come first. Read the rendered page and record an offer as soon as its identity, source URL,
+and displayed price are visible, even when checkout-only fees remain unknown. Continue enriching
+that offer afterward. A blocked enrichment step must not erase or delay an already useful result.
 """
 
 _CATEGORY = {
     Category.RETAIL: """
 Allowed domains: amazon.eg, jumia.com.eg, noon.com, including their required subdomains.
 Keep a separate tab for each merchant. Search Amazon Egypt, Jumia Egypt, and Noon Egypt.
+Before using any retailer search field, reduce the user's request to concise catalog keywords:
+keep the product type, brand, exact model, variant, and differentiating specifications, but omit
+request phrasing, merchant names, budgets, delivery/ranking instructions, and comparison prose.
+Use the supplied retail search brief as a starting point and refine it when the request makes a
+better query clear. Never paste the complete user request into a retailer search field.
 For every candidate validate brand, exact model, storage/variant, applicable size and color,
 quantity, stock, seller condition, availability, and match confidence. Treat every user budget
 as a ceiling on the complete delivered total. Treat every requested arrival date as a hard
 constraint and normalize a verified arrival date to YYYY-MM-DD in `delivery_estimate`; use null
 when no arrival date can be verified for the relevant delivery area.
 Never silently substitute a different model or variant. Obtain
-complete delivered totals from at least two exact matches when possible. Test coupons, restore
-the winning cart, and stop before payment. A retailer is cart-ready only after its cart shows
+complete delivered totals from at least two exact matches when possible without authentication.
+Unless the processed request understanding has requires_checkout=true or requires_coupons=true,
+do not enter checkout or authentication merely to compare products; compare public product/cart
+prices and clearly retain unknown fees as null. Test coupons only when requested, restore the
+winning cart, and stop before payment. A retailer is cart-ready only after its cart shows
 the intended exact product, quantity, and subtotal; a click alone is not confirmation. You may
 open the reversible checkout action to identify the next gate. If Amazon, Jumia, or Noon asks
 for sign-in, an OTP, or account creation, leave that merchant at the authentication screen for
@@ -408,6 +423,12 @@ def _sanitize_coupon_attempts(value: Any) -> list[dict[str, Any]]:
             )
         sanitized.append(
             {
+                "coupon_attempt_id": (
+                    str(item["coupon_attempt_id"]).strip()[:128]
+                    if item.get("coupon_attempt_id")
+                    else None
+                ),
+                "offer_id": (str(item["offer_id"]).strip()[:128] if item.get("offer_id") else None),
                 "merchant": platform,
                 "code": str(item.get("code", "")),
                 "source_url": source_url,
@@ -547,6 +568,7 @@ def validate_agent_result(
                 merchant=str(item.get("merchant", "")),
                 title=str(item.get("title", "")),
                 url=str(item.get("url", "")),
+                offer_id=(str(item["offer_id"]).strip()[:128] if item.get("offer_id") else None),
                 exact_match=item.get("exact_match") is True,
                 match_confidence=_confidence(item.get("match_confidence")),
                 valid=(
@@ -569,6 +591,7 @@ def validate_agent_result(
     winner = ranking.winner
     serialized_candidates = [
         {
+            "offer_id": candidate.offer_id,
             "merchant": candidate.merchant,
             "title": candidate.title,
             "url": candidate.url,

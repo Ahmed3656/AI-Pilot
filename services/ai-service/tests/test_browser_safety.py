@@ -57,6 +57,36 @@ def test_captcha_fixture_pauses_and_is_never_solved() -> None:
     assert pause.value.preserve_page is True
 
 
+def test_dormant_captcha_markup_does_not_pause_without_a_visible_challenge() -> None:
+    inspect_page_for_pause(
+        '<script src="https://captcha.example/api.js"></script>'
+        '<div class="g-recaptcha" style="display:none"></div>',
+        "https://www.amazon.eg/s?k=phone",
+        visible_captcha_challenge=False,
+    )
+
+
+def test_visible_captcha_signal_still_pauses() -> None:
+    with pytest.raises(PauseRequired) as pause:
+        inspect_page_for_pause(
+            "<main>Search results</main>",
+            "https://www.amazon.eg/s?k=phone",
+            visible_captcha_challenge=True,
+        )
+    assert pause.value.reason_code is PauseReason.CAPTCHA
+    assert pause.value.preserve_page is True
+
+
+def test_captcha_url_pauses_even_before_widget_is_rendered() -> None:
+    with pytest.raises(PauseRequired) as pause:
+        inspect_page_for_pause(
+            "<main>Loading</main>",
+            "https://www.amazon.eg/errors/validateCaptcha",
+            visible_captcha_challenge=False,
+        )
+    assert pause.value.reason_code is PauseReason.CAPTCHA
+
+
 def test_denied_or_unapproved_navigation_never_calls_selenium_get() -> None:
     class Driver:
         def __init__(self) -> None:

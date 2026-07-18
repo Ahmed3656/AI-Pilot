@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from agent_ai.browser.safety import PauseRequired
-from agent_ai.browser.selenium_remote import VisualFallbackRequired
+from agent_ai.browser.selenium_remote import VisualFallbackRequired, WorkflowBoundaryReached
 from agent_ai.models import Category
 from agent_ai.providers import openrouter_responses
 from agent_ai.providers.openrouter_responses import OpenRouterComputerAgent
@@ -61,6 +61,68 @@ class FakeExecutor:
 
 
 @pytest.mark.asyncio
+async def test_request_understanding_uses_model_structured_intent() -> None:
+    class UnderstandingResponses:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                output=[
+                    {
+                        "type": "function_call",
+                        "name": "submit_request_understanding",
+                        "arguments": json.dumps(
+                            {
+                                "category": "retail",
+                                "search_query": "Samsung Galaxy S24 Ultra 256GB black",
+                                "target": {
+                                    "name": "Samsung Galaxy S24 Ultra",
+                                    "brand": "Samsung",
+                                    "model": "Galaxy S24 Ultra",
+                                    "variant": "256GB black",
+                                    "specifications": ["256GB", "black"],
+                                },
+                                "constraints": {"budget_max_egp": 50000},
+                                "comparison_priorities": [
+                                    "exact_match",
+                                    "lowest_total",
+                                ],
+                                "requires_checkout": False,
+                                "requires_coupons": False,
+                            }
+                        ),
+                    }
+                ]
+            )
+
+    responses = UnderstandingResponses()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=responses),
+    )
+    raw_query = (
+        "Bro find me a Samsung Galaxy S24 Ultra 256GB in black under 50k and compare "
+        "Amazon, Jumia, and Noon including delivery"
+    )
+
+    understanding = await agent.understand_request(
+        query=raw_query,
+        category=Category.RETAIL,
+    )
+
+    assert understanding["search_query"] == "Samsung Galaxy S24 Ultra 256GB black"
+    assert understanding["target"]["model"] == "Galaxy S24 Ultra"
+    assert understanding["constraints"] == {"budget_max_egp": 50000}
+    assert responses.calls[0]["tool_choice"] == {
+        "type": "function",
+        "name": "submit_request_understanding",
+    }
+    assert raw_query in responses.calls[0]["input"][0]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_openrouter_uses_bounded_stateless_history_and_standard_function_tools() -> None:
     responses = FakeResponses()
     executor = FakeExecutor()
@@ -86,6 +148,9 @@ async def test_openrouter_uses_bounded_stateless_history_and_standard_function_t
     assert responses.calls[0]["input"][0]["content"][1]["type"] == "input_image"
     assert responses.calls[0]["input"][0]["content"][1]["detail"] == "original"
     assert "{{secret:street}}" in responses.calls[0]["input"][0]["content"][0]["text"]
+    first_prompt = responses.calls[0]["input"][0]["content"][0]["text"]
+    assert "Processed request understanding" in first_prompt
+    assert '"search_query": "iPhone"' in first_prompt
     assert executor.actions == [{"type": "screenshot"}]
     computer_tool = next(
         tool for tool in responses.calls[0]["tools"] if tool["name"] == "dealpilot_computer"
@@ -112,6 +177,46 @@ async def test_openrouter_uses_bounded_stateless_history_and_standard_function_t
         == 1
     )
     assert agent.last_response_id == "response-2"
+
+
+@pytest.mark.asyncio
+async def test_raw_retail_prompt_typing_is_replaced_with_search_terms() -> None:
+    executor = FakeExecutor()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=FakeResponses()),
+    )
+    raw_query = (
+        "Please find a Samsung Galaxy S24 Ultra 256GB in black under 50,000 EGP and compare prices"
+    )
+    call = {
+        "id": "call-search",
+        "arguments": json.dumps({"actions": [{"type": "type", "text": raw_query}]}),
+    }
+
+    await agent._handle_computer_call(
+        call,
+        executor,  # type: ignore[arg-type]
+        raw_user_query=raw_query,
+        retail_search_terms="Samsung Galaxy S24 Ultra 256GB in black",
+    )
+    prefixed_call = {
+        "id": "call-search-prefixed",
+        "arguments": json.dumps(
+            {"actions": [{"type": "type", "text": f"Search for this product: {raw_query}"}]}
+        ),
+    }
+    await agent._handle_computer_call(
+        prefixed_call,
+        executor,  # type: ignore[arg-type]
+        raw_user_query=raw_query,
+        retail_search_terms="Samsung Galaxy S24 Ultra 256GB in black",
+    )
+
+    assert executor.actions == [
+        {"type": "type", "text": "Samsung Galaxy S24 Ultra 256GB in black"},
+        {"type": "type", "text": "Samsung Galaxy S24 Ultra 256GB in black"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -174,7 +279,7 @@ async def test_only_latest_frame_is_sent_when_model_returns_multiple_computer_ca
 
 
 @pytest.mark.asyncio
-async def test_changed_button_uses_visual_retry_then_human_takeover() -> None:
+async def test_changed_button_uses_visual_retry_then_skips_without_takeover() -> None:
     class NotFoundVisionLocator:
         def __init__(self) -> None:
             self.calls = 0
@@ -219,14 +324,18 @@ async def test_changed_button_uses_visual_retry_then_human_takeover() -> None:
         "actionCount": 0,
         "fallback": "visual_retry",
         "detectorAttempted": True,
+        "detector": "NotFoundVisionLocator",
         "reason": "The requested button moved",
+        "guidance": (
+            "Do not retry the same coordinates. Read the rendered page text, navigate through "
+            "a verified approved-domain link, or record a partial result and continue."
+        ),
     }
     assert second["fallback"] == "visual_retry"
-    assert third["fallback"] == "human_takeover"
+    assert third["fallback"] == "action_skipped"
     assert first_screenshot.endswith("aW5pdGlhbA==")
     assert third_screenshot.endswith("aW5pdGlhbA==")
-    assert len(executor.pauses) == 1
-    assert executor.pauses[0].preserve_page is True
+    assert executor.pauses == []
     assert locator.calls == 3
 
 
@@ -267,6 +376,7 @@ async def test_secondary_vision_locator_recovers_changed_button_and_continues() 
         "executed": True,
         "actionCount": 1,
         "fallback": "vision_localizer",
+        "fallbackDetector": "FoundVisionLocator",
         "fallbackLabel": "Continue",
         "fallbackConfidence": 0.93,
     }
@@ -280,7 +390,7 @@ async def test_secondary_vision_locator_recovers_changed_button_and_continues() 
 
 
 @pytest.mark.asyncio
-async def test_automation_step_limit_hands_control_to_human_without_failing() -> None:
+async def test_automation_step_limit_requests_partial_finalization_without_takeover() -> None:
     class StepLimitExecutor(FakeExecutor):
         def __init__(self) -> None:
             super().__init__()
@@ -307,12 +417,46 @@ async def test_automation_step_limit_hands_control_to_human_without_failing() ->
     assert second == {
         "executed": False,
         "actionCount": 0,
-        "fallback": "human_takeover",
+        "fallback": "automation_budget",
         "reason": "automation_step_limit",
+        "mustFinalize": True,
+        "guidance": (
+            "Return the offers already observed as partial results; do not call the computer "
+            "tool again."
+        ),
     }
     assert screenshot.endswith("aW5pdGlhbA==")
-    assert len(executor.pauses) == 1
-    assert executor.pauses[0].preserve_page is True
+    assert executor.pauses == []
+
+
+@pytest.mark.asyncio
+async def test_expected_payment_boundary_finalizes_without_user_takeover() -> None:
+    class BoundaryExecutor(FakeExecutor):
+        last_screenshot = "data:image/png;base64,c2FmZQ=="
+
+        async def execute(self, action: dict[str, Any]) -> str:
+            self.actions.append(action)
+            raise WorkflowBoundaryReached(
+                "payment",
+                "Payment details page detected; AI stopped before inspecting payment data",
+            )
+
+    executor = BoundaryExecutor()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=FakeResponses()),
+    )
+    call = {
+        "id": "call-payment-boundary",
+        "arguments": json.dumps({"actions": [{"type": "screenshot"}]}),
+    }
+
+    result, screenshot = await agent._handle_computer_call(call, executor)  # type: ignore[arg-type]
+
+    assert result["fallback"] == "workflow_boundary"
+    assert result["boundary"] == "payment"
+    assert result["mustFinalize"] is True
+    assert screenshot == executor.last_screenshot
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ import json
 from datetime import date
 
 from agent_ai.models import Category
+from agent_ai.workflows import retail_search_query
 from agent_ai.workflows.specs import validate_agent_result, workflow_instructions
 
 
@@ -133,6 +134,29 @@ def test_category_prompts_encode_phase_one_constraints() -> None:
     assert "details.payment_info" in retail
     assert "installment" in retail
     assert "user does not need to reopen the pages" in retail
+    assert "Never paste the complete user request" in retail
+
+
+def test_retail_search_query_keeps_product_specs_and_drops_request_operations() -> None:
+    assert (
+        retail_search_query(
+            "Could you please help me find a Samsung Galaxy S24 Ultra 256GB in black "
+            "under 50,000 EGP and compare prices?"
+        )
+        == "Samsung Galaxy S24 Ultra 256GB in black"
+    )
+    assert (
+        retail_search_query(
+            "find product wireless noise cancelling headphones with 30 hour battery life"
+        )
+        == "wireless noise cancelling headphones with 30 hour battery life"
+    )
+    assert (
+        retail_search_query(
+            "عايز اشتري موبايل سامسونج A55 مساحة 256 جيجا لون أسود بأقل من 20000 جنيه وقارن الأسعار"
+        )
+        == "موبايل سامسونج A55 مساحة 256 جيجا لون أسود"
+    )
 
 
 def test_retail_payment_info_is_sanitized_and_preserved() -> None:

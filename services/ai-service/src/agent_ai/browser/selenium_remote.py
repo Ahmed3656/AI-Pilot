@@ -140,6 +140,43 @@ return Array.from(document.querySelectorAll('input')).some((el) => {
 });
 """
 
+_VISIBLE_CAPTCHA_CHALLENGE = """
+const visible = (el) => {
+  if (!el || el.hidden) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
+      rect.top >= window.innerHeight || rect.left >= window.innerWidth) return false;
+  for (let node = el; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' ||
+        Number(style.opacity) === 0) return false;
+  }
+  return true;
+};
+const challengeSelectors = [
+  '.g-recaptcha', '.h-captcha', '.cf-turnstile',
+  '[data-hcaptcha-widget-id]',
+  'iframe[title*="recaptcha challenge" i]',
+  'iframe[src*="hcaptcha.com/captcha" i]',
+  'iframe[src*="challenges.cloudflare.com" i]',
+  'input[name*="captcha" i]', 'img[alt*="captcha" i]'
+];
+if (challengeSelectors.some((selector) =>
+  Array.from(document.querySelectorAll(selector)).some(visible))) return true;
+const humanPrompts = [
+  'verify you are human', 'verify that you are human', "i'm not a robot",
+  'complete the security check', 'performing security verification',
+  'أنا لست برنامج روبوت', 'تحقق من أنك إنسان'
+];
+return Array.from(document.querySelectorAll(
+  'h1, h2, h3, p, label, button, [role="alert"], [role="dialog"]'
+)).some((el) => {
+  if (!visible(el)) return false;
+  const text = (el.innerText || el.textContent || '').toLowerCase();
+  return humanPrompts.some((marker) => text.includes(marker));
+});
+"""
+
 _MASK_PAGE = """
 window.__dealpilotRedactions = [];
 const secrets = arguments[0].filter(Boolean).sort((a, b) => b.length - a.length);
@@ -229,6 +266,15 @@ MerchantAttemptGetter = Callable[[], str | None]
 
 class VisualFallbackRequired(RuntimeError):
     """A changed or stale UI target must be re-located from a fresh screenshot."""
+
+
+class WorkflowBoundaryReached(RuntimeError):
+    """An expected comparison boundary was reached without requiring user repair."""
+
+    def __init__(self, boundary: str, reason: str) -> None:
+        self.boundary = boundary
+        self.reason = reason
+        super().__init__(reason)
 
 
 @dataclass(slots=True)
@@ -407,11 +453,13 @@ class SeleniumRemoteBrowser:
                 self.driver.execute_script(_VISIBLE_SENSITIVE_PAYMENT_CONTROL)
             )
             visible_login_control = bool(self.driver.execute_script(_VISIBLE_LOGIN_CONTROL))
+            visible_captcha_challenge = bool(self.driver.execute_script(_VISIBLE_CAPTCHA_CHALLENGE))
             inspect_page_for_pause(
                 self.driver.page_source,
                 self.driver.current_url,
                 visible_sensitive_control=visible_sensitive_control,
                 visible_login_control=visible_login_control,
+                visible_captcha_challenge=visible_captcha_challenge,
             )
             self._safe_urls[handle] = self.driver.current_url
             self.tabs.setdefault(domain, handle)
@@ -619,6 +667,7 @@ class BrowserActionExecutor:
         merchant_attempt_getter: MerchantAttemptGetter | None = None,
         action_lock: asyncio.Lock | None = None,
         redactor: SecretRedactor | None = None,
+        allow_login_takeover: bool = True,
     ) -> None:
         self.browser = browser
         self.category = category
@@ -633,6 +682,7 @@ class BrowserActionExecutor:
         self.merchant_attempt_getter = merchant_attempt_getter or (lambda: None)
         self.action_lock = action_lock or asyncio.Lock()
         self.redactor = redactor or SecretRedactor()
+        self.allow_login_takeover = allow_login_takeover
         self.evidence_ids: list[str] = []
         self.evidence_by_attempt: dict[str, list[str]] = {}
         self._last_screenshot: str | None = None
@@ -645,6 +695,10 @@ class BrowserActionExecutor:
             self._approved_domains() if callable(self._approved_domains) else self._approved_domains
         )
         return frozenset(value)
+
+    @property
+    def last_screenshot(self) -> str | None:
+        return self._last_screenshot
 
     async def execute(self, action: Mapping[str, Any]) -> str:
         await self.wait_until_active()
@@ -689,6 +743,7 @@ class BrowserActionExecutor:
                     raise SafetyViolation(f"Unsupported computer action: {kind}")
                 await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
         except PauseRequired as exc:
+            self._raise_expected_boundary(exc)
             await self._pause_safely(exc)
             return await self.capture(action=f"{kind}_after_human")
         except SafetyViolation as exc:
@@ -705,6 +760,7 @@ class BrowserActionExecutor:
                 await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
                 png = await asyncio.to_thread(self.browser.masked_screenshot, self.redactor.values)
         except PauseRequired as exc:
+            self._raise_expected_boundary(exc)
             await self._pause_safely(exc)
             return await self.capture(action=action)
         attempt_id = self.merchant_attempt_getter()
@@ -749,6 +805,7 @@ class BrowserActionExecutor:
                 await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
                 page = await asyncio.to_thread(self.browser.visible_text, max_chars)
         except PauseRequired as exc:
+            self._raise_expected_boundary(exc)
             await self._pause_safely(exc)
             return await self.read_page_text(max_chars=max_chars)
         links: list[dict[str, str]] = []
@@ -802,6 +859,17 @@ class BrowserActionExecutor:
     async def pause_for_safety(self, exc: PauseRequired) -> None:
         await self._pause_safely(exc)
 
+    def _raise_expected_boundary(self, exc: PauseRequired) -> None:
+        if exc.reason_code is PauseReason.BROWSER_WARNING and exc.reason.startswith(
+            "Payment details page detected"
+        ):
+            raise WorkflowBoundaryReached("payment", exc.reason) from exc
+        if not self.allow_login_takeover and exc.reason_code in {
+            PauseReason.LOGIN,
+            PauseReason.ONE_TIME_CODE,
+        }:
+            raise WorkflowBoundaryReached("authentication", exc.reason) from exc
+
     async def _click(self, action: Mapping[str, Any], *, double: bool) -> None:
         x, y = int(action["x"]), int(action["y"])
         try:
@@ -849,7 +917,7 @@ class BrowserActionExecutor:
                 double=double,
                 button=str(action.get("button", "left")),
             )
-        except WebDriverException as exc:
+        except (WebDriverException, SafetyViolation) as exc:
             raise VisualFallbackRequired(
                 "The page changed before the requested control could be clicked."
             ) from exc
@@ -927,13 +995,17 @@ def _interaction_target_matches(target: str, metadata: Mapping[str, Any]) -> boo
     metadata_text = " ".join(metadata_text.split())
     if not target_text or not metadata_text:
         return False
-    if target_text in metadata_text:
+    if target_text in metadata_text or metadata_text in target_text:
         return True
     target_words = {
         word for word in re.findall(r"[\w-]+", target_text) if word not in _TARGET_NOISE_WORDS
     }
-    metadata_words = set(re.findall(r"[\w-]+", metadata_text))
-    return bool(target_words) and target_words.issubset(metadata_words)
+    metadata_words = {
+        word for word in re.findall(r"[\w-]+", metadata_text) if word not in _TARGET_NOISE_WORDS
+    }
+    return bool(target_words and metadata_words) and (
+        target_words.issubset(metadata_words) or metadata_words.issubset(target_words)
+    )
 
 
 def safe_url_for_event(url: str, redactor: SecretRedactor) -> str:
