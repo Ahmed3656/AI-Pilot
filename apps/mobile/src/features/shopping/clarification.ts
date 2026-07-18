@@ -47,6 +47,7 @@ const signals: Record<ShoppingCategory, string[]> = {
     'buy',
     'phone',
     'samsung',
+    'galaxy',
     'iphone',
     'xiaomi',
     'oppo',
@@ -140,6 +141,15 @@ const signals: Record<ShoppingCategory, string[]> = {
   ],
 };
 
+const signalPatterns: Record<ShoppingCategory, RegExp[]> = {
+  retail: [
+    /\b(?:galaxy\s+)?[asmz]\s?\d{2,3}(?:\s*(?:5g|fe|ultra|plus))?\b/i,
+    /\b\d{2,4}\s*(?:gb|gigabytes?)\b/i,
+  ],
+  food: [],
+  cinema: [],
+};
+
 export function detectShoppingCategory(
   request: string,
 ): ShoppingCategory | null {
@@ -149,9 +159,10 @@ export function detectShoppingCategory(
   let bestCategory: ShoppingCategory | null = null;
   let bestMatches = 0;
   for (const category of Object.keys(signals) as ShoppingCategory[]) {
-    const matches = signals[category].filter((signal) =>
-      normalized.includes(signal),
-    ).length;
+    const matches =
+      signals[category].filter((signal) => normalized.includes(signal)).length +
+      signalPatterns[category].filter((pattern) => pattern.test(normalized))
+        .length;
     if (matches > bestMatches) {
       bestCategory = category;
       bestMatches = matches;

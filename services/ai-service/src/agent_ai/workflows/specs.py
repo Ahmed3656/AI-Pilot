@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlsplit
@@ -9,6 +10,11 @@ from urllib.parse import urlsplit
 from agent_ai.browser.safety import SafetyViolation, assert_allowed_url
 from agent_ai.models import Candidate, Category, MandatoryFee, MoneyBreakdown
 from agent_ai.orchestrator.ranking import rank_candidates
+from agent_ai.orchestrator.request_understanding import (
+    RetailConstraints,
+    check_retail_constraints,
+    interpret_retail_query,
+)
 
 _COMMON = """
 You are DealPilot Egypt Phase 1. Accept Arabic and English, but operate only in Egypt and
@@ -39,10 +45,10 @@ Call record_dealpilot_discovery immediately for every merchant attempt, partial 
 result, and warning. Do not include secrets or screenshot bytes in those calls. Finish with
 JSON only. Include `candidates`, each with merchant, title, url, exact_match, valid, subtotal,
 delivery_fee, service_fee, booking_fee, tax, mandatory_fees, discount, total, currency (EGP),
-evidence_ids, and details. Components that cannot apply are "0.00"; a component that may apply
-but was not verified is null. Include `coupon_attempts`, `stopped_before`, and `notes`. A missing
-amount must be null, never guessed. The reported total must equal subtotal + delivery + service
-+ booking + tax + mandatory fees - verified discount.
+availability, match_confidence (0..1), evidence_ids, and details. Components that cannot apply
+are "0.00"; a component that may apply but was not verified is null. Include `coupon_attempts`,
+`stopped_before`, and `notes`. A missing amount must be null, never guessed. The reported total
+must equal subtotal + delivery + service + booking + tax + mandatory fees - verified discount.
 """
 
 _CATEGORY = {
@@ -50,7 +56,10 @@ _CATEGORY = {
 Allowed domains: amazon.eg, jumia.com.eg, noon.com, including their required subdomains.
 Keep a separate tab for each merchant. Search Amazon Egypt, Jumia Egypt, and Noon Egypt.
 For every candidate validate brand, exact model, storage/variant, applicable size and color,
-quantity, stock, and seller condition.
+quantity, stock, seller condition, availability, and match confidence. Treat every user budget
+as a ceiling on the complete delivered total. Treat every requested arrival date as a hard
+constraint and normalize a verified arrival date to YYYY-MM-DD in `delivery_estimate`; use null
+when no arrival date can be verified for the relevant delivery area.
 Never silently substitute a different model or variant. Obtain
 complete delivered totals from at least two exact matches when possible. Test coupons, restore
 the winning cart, and stop before payment. A retailer is cart-ready only after its cart shows
@@ -421,12 +430,19 @@ def validate_agent_result(
     text: str,
     *,
     approved_domains: set[str] | frozenset[str] | None = None,
+    query: str | None = None,
+    reference: datetime | date | None = None,
 ) -> dict[str, Any]:
     """Turn untrusted model output into a deterministic ranked result."""
     raw = _extract_json(text)
     raw_candidates = raw.get("candidates", [])
     if not isinstance(raw_candidates, list):
         raise ValueError("candidates must be a list")
+    constraints = (
+        interpret_retail_query(query, reference=reference)
+        if category is Category.RETAIL and query
+        else RetailConstraints()
+    )
     candidates: list[Candidate] = []
     for item in raw_candidates:
         if not isinstance(item, dict):
@@ -501,7 +517,19 @@ def validate_agent_result(
             else has_all_total_fields and total_consistent
         )
         evidence_ids = tuple(str(value) for value in item.get("evidence_ids", []))
+        constraint_outcome = (
+            check_retail_constraints(
+                constraints,
+                title=str(item.get("title", "")),
+                details=details,
+                money=money,
+                reference=reference,
+            )
+            if category is Category.RETAIL and constraints.has_constraints
+            else None
+        )
         incomplete_reason = None
+        exclusion_reason = constraint_outcome.exclusion_reason if constraint_outcome else None
         if not complete_details:
             incomplete_reason = "MISSING_REQUIRED_FIELD"
         elif not price_valid:
@@ -512,23 +540,29 @@ def validate_agent_result(
             )
         elif not evidence_ids:
             incomplete_reason = "MISSING_EVIDENCE"
+        elif constraint_outcome and constraint_outcome.incomplete_reason:
+            incomplete_reason = constraint_outcome.incomplete_reason
         candidates.append(
             Candidate(
                 merchant=str(item.get("merchant", "")),
                 title=str(item.get("title", "")),
                 url=str(item.get("url", "")),
                 exact_match=item.get("exact_match") is True,
+                match_confidence=_confidence(item.get("match_confidence")),
                 valid=(
                     item.get("valid") is True
                     and domain_allowed
                     and complete_details
                     and price_valid
                     and bool(evidence_ids)
+                    and exclusion_reason is None
+                    and incomplete_reason is None
                 ),
                 money=money,
                 details=details,
                 evidence_ids=evidence_ids,
                 incomplete_reason=incomplete_reason,
+                exclusion_reason=exclusion_reason,
             )
         )
     ranking = rank_candidates(category, candidates)
@@ -539,6 +573,7 @@ def validate_agent_result(
             "title": candidate.title,
             "url": candidate.url,
             "exact_match": candidate.exact_match,
+            "match_confidence": candidate.match_confidence,
             "valid": candidate.valid,
             "subtotal": (_money(candidate.money.subtotal)),
             "delivery_fee": _money(candidate.money.delivery_fee),
@@ -559,6 +594,7 @@ def validate_agent_result(
             "details": candidate.details,
             "evidence_ids": list(candidate.evidence_ids),
             "incomplete_reason": candidate.incomplete_reason,
+            "exclusion_reason": candidate.exclusion_reason,
         }
         for candidate in candidates
     ]
@@ -590,4 +626,27 @@ def validate_agent_result(
         "coupon_attempts": _sanitize_coupon_attempts(raw.get("coupon_attempts", [])),
         "stopped_before": raw.get("stopped_before"),
         "notes": raw.get("notes", []),
+        "interpreted_constraints": _serialize_constraints(constraints),
     }
+
+
+def _serialize_constraints(constraints: RetailConstraints) -> dict[str, Any]:
+    return {
+        "brand": constraints.brand,
+        "model": constraints.model,
+        "storage_gb": constraints.storage_gb,
+        "max_total": _money(constraints.max_total),
+        "delivery_deadline": (
+            constraints.delivery_deadline.isoformat()
+            if constraints.delivery_deadline is not None
+            else None
+        ),
+    }
+
+
+def _confidence(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return min(1.0, max(0.0, number))

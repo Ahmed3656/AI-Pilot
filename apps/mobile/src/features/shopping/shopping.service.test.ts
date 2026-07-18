@@ -8,6 +8,8 @@ import {
   createViewerToken,
   eventWebSocketUrl,
   getRunEventHistory,
+  isActiveShoppingRunError,
+  isShoppingBrowserBusyError,
   normalizeRunResource,
   replaceActiveShoppingRun,
   releaseControl,
@@ -127,6 +129,21 @@ describe('canonical shopping service', () => {
         locale: 'en-EG',
       }),
     ).rejects.toBeInstanceOf(ShoppingBrowserBusyError);
+  });
+
+  it('recognizes shopping errors created before an Expo hot reload', () => {
+    const active = Object.assign(new Error('ACTIVE_RUN_EXISTS'), {
+      name: 'ActiveShoppingRunError',
+      runId: run.id,
+    });
+    const busy = Object.assign(new Error('BROWSER_BUSY'), {
+      name: 'ShoppingBrowserBusyError',
+    });
+
+    expect(isActiveShoppingRunError(active)).toBe(true);
+    expect(isShoppingBrowserBusyError(busy)).toBe(true);
+    expect(isActiveShoppingRunError(busy)).toBe(false);
+    expect(isShoppingBrowserBusyError(new Error('network'))).toBe(false);
   });
 
   it('cancels the old run before creating its replacement', async () => {

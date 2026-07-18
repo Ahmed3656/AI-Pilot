@@ -392,6 +392,17 @@ describe('DealPilot canonical API contract (e2e)', () => {
       status: 'discovering',
     });
 
+    const naturalRetail = await createRun(
+      'auto',
+      'Find a Samsung A55 256 GB under 25,000 EGP, delivered by Thursday',
+      'en-EG',
+    );
+    expect(naturalRetail.run).toMatchObject({
+      requestedCategory: 'auto',
+      category: 'retail',
+      status: 'discovering',
+    });
+
     for (const query of [
       'Find koshary near me',
       'Compare burgers close to me',
@@ -1019,6 +1030,48 @@ describe('DealPilot canonical API contract (e2e)', () => {
       merchantAttemptId: attemptId,
       evidenceIds: [evidenceId],
     });
+    await postEvent(runId, 'comparing', 'offer.recorded', {
+      offerId: 'offer:materialized-samsung-a55',
+      validity: 'valid',
+      merchantAttemptId: attemptId,
+      evidenceIds: [evidenceId],
+      offer: {
+        title: 'Samsung Galaxy A55 5G 256GB',
+        sourceUrl: 'https://www.amazon.eg/example-a55',
+        match: {
+          exact: true,
+          confidence: 0.98,
+          explanation: 'Exact model and storage match.',
+        },
+        availability: 'available',
+        details: {
+          kind: 'retail',
+          brand: 'Samsung',
+          model: 'A55',
+          variant: '8 GB RAM',
+          storage: '256 GB',
+          size: null,
+          color: 'blue',
+          quantity: 1,
+          condition: 'new',
+          deliveryEstimate: '2026-07-19',
+        },
+        price: {
+          itemSubtotal: '24495.00',
+          deliveryFee: '0.00',
+          serviceFee: '0.00',
+          bookingFee: '0.00',
+          tax: '0.00',
+          mandatoryFees: [],
+          verifiedDiscount: '0.00',
+          optionalTip: null,
+          finalTotal: '24495.00',
+        },
+        observedAt: '2026-07-18T10:00:00.000Z',
+        exclusionReason: null,
+        incompleteFields: [],
+      },
+    });
     await postEvent(runId, 'comparing', 'merchant.attempt_completed', {
       attemptId,
       outcome: 'unavailable',
@@ -1034,6 +1087,18 @@ describe('DealPilot canonical API contract (e2e)', () => {
         id: offerId,
         merchantAttemptId: attemptId,
         evidenceIds: [evidenceId],
+      }),
+    ]);
+    expect(report.body.validOffers).toEqual([
+      expect.objectContaining({
+        id: 'offer:materialized-samsung-a55',
+        title: 'Samsung Galaxy A55 5G 256GB',
+        price: expect.objectContaining({ finalTotal: '24495.00' }),
+        details: expect.objectContaining({
+          model: 'A55',
+          storage: '256 GB',
+          deliveryEstimate: '2026-07-19',
+        }),
       }),
     ]);
     expect(report.body.partialFailures).toEqual([

@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 from urllib.parse import quote_plus
 from uuid import uuid4
@@ -854,6 +855,7 @@ class RunManager:
                 record.category,
                 raw,
                 approved_domains={worker.domain},
+                query=record.request.query,
             )
             for candidate in worker.result.get("candidates", []):
                 candidate["merchant"] = worker.domain
@@ -936,6 +938,7 @@ class RunManager:
             record.category,
             json.dumps({"candidates": candidates, "coupon_attempts": []}),
             approved_domains=record.approved_domains,
+            query=record.request.query,
         )
         result["coupon_attempts"] = [
             coupon
@@ -1120,16 +1123,22 @@ class RunManager:
             if data.get("valid") is True
             else ("incomplete" if data.get("incomplete_reason") else "excluded")
         )
+        attempt_id = (
+            _attempt_id(record, data.get("merchant")) or next(iter(record.attempts.values())).id
+        )
+        payload: dict[str, Any] = {
+            "offerId": offer_id,
+            "validity": validity,
+            "merchantAttemptId": attempt_id,
+            "evidenceIds": evidence_ids,
+        }
+        snapshot = _normalized_offer_snapshot(record, data, validity)
+        if snapshot is not None:
+            payload["offer"] = snapshot
         await self.control.emit(
             record.run_id,
             "offer.recorded",
-            {
-                "offerId": offer_id,
-                "validity": validity,
-                "merchantAttemptId": _attempt_id(record, data.get("merchant"))
-                or next(iter(record.attempts.values())).id,
-                "evidenceIds": evidence_ids,
-            },
+            payload,
             status=record.status,
         )
 
@@ -1386,3 +1395,128 @@ def _attach_evidence(raw: str, evidence_ids: list[str]) -> str:
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _normalized_offer_snapshot(
+    record: RunRecord,
+    data: dict[str, Any],
+    validity: str,
+) -> dict[str, Any] | None:
+    source_url = str(data.get("url", "")).strip()
+    title = str(data.get("title", "")).strip()
+    details = data.get("details")
+    if not source_url or not title or not isinstance(details, dict) or record.category is None:
+        return None
+    availability = str(data.get("availability", "")).casefold()
+    if availability not in {"available", "unavailable", "unknown"}:
+        stock = details.get("stock")
+        availability = (
+            "available" if stock is True else ("unavailable" if stock is False else "unknown")
+        )
+    confidence = data.get("match_confidence", 0)
+    try:
+        match_confidence = min(1.0, max(0.0, float(confidence)))
+    except (TypeError, ValueError):
+        match_confidence = 0.0
+    return {
+        "title": title[:1_000],
+        "sourceUrl": source_url,
+        "match": {
+            "exact": data.get("exact_match") is True,
+            "confidence": match_confidence,
+            "explanation": str(
+                data.get("match_explanation")
+                or data.get("exclusion_reason")
+                or "Compared with the user's parsed hard constraints."
+            )[:1_000],
+        },
+        "availability": availability,
+        "details": _contract_offer_details(record.category, details),
+        "price": {
+            "itemSubtotal": _decimal_text(data.get("subtotal"), default="0.00"),
+            "deliveryFee": _decimal_text(data.get("delivery_fee")),
+            "serviceFee": _decimal_text(data.get("service_fee")),
+            "bookingFee": _decimal_text(data.get("booking_fee")),
+            "tax": _decimal_text(data.get("tax")),
+            "mandatoryFees": [
+                {
+                    "label": str(fee.get("label", "mandatory fee"))[:200],
+                    "amount": _decimal_text(fee.get("amount"), default="0.00"),
+                    "evidenceIds": [str(value) for value in fee.get("evidence_ids", [])],
+                }
+                for fee in data.get("mandatory_fees", [])
+                if isinstance(fee, dict)
+            ],
+            "verifiedDiscount": _decimal_text(data.get("discount"), default="0.00"),
+            "optionalTip": "0.00" if record.category is Category.FOOD else None,
+            "finalTotal": _decimal_text(data.get("total")),
+        },
+        "observedAt": _timestamp(),
+        "exclusionReason": (
+            str(data.get("exclusion_reason") or "Offer did not meet the parsed constraints.")
+            if validity == "excluded"
+            else None
+        ),
+        "incompleteFields": (
+            [str(data["incomplete_reason"])] if data.get("incomplete_reason") else []
+        ),
+    }
+
+
+def _contract_offer_details(category: Category, details: dict[str, Any]) -> dict[str, Any]:
+    if category is Category.RETAIL:
+        return {
+            "kind": "retail",
+            "brand": str(details.get("brand", "")),
+            "model": str(details.get("model", "")),
+            "variant": details.get("variant"),
+            "storage": details.get("storage"),
+            "size": details.get("size"),
+            "color": details.get("color"),
+            "quantity": details.get("quantity"),
+            "condition": str(details.get("seller_condition", "")).casefold(),
+            "deliveryEstimate": details.get("delivery_estimate"),
+        }
+    if category is Category.FOOD:
+        return {
+            "kind": "food",
+            "restaurant": str(details.get("restaurant", "")),
+            "meal": str(details.get("meal", "")),
+            "size": details.get("meal_size"),
+            "modifiers": details.get("required_modifiers", []),
+            "rating": details.get("rating"),
+            "minimumOrder": details.get("minimum_order"),
+            "deliveryEstimate": details.get("delivery_estimate"),
+            "optionalTipExcluded": details.get("tip_excluded") is True,
+            "sourceName": details.get("source_name"),
+            "branchArea": details.get("branch_area"),
+            "distanceKm": details.get("distance_km"),
+            "distanceText": details.get("distance_text"),
+            "proximityBasis": details.get("proximity_basis"),
+            "priceScope": details.get("price_scope"),
+        }
+    return {
+        "kind": "cinema",
+        "movie": str(details.get("movie", "")),
+        "venue": str(details.get("venue", details.get("venue_area", ""))),
+        "date": details.get("date"),
+        "showtime": details.get("showtime", details.get("time")),
+        "language": str(details.get("language", "")),
+        "screenFormat": str(details.get("screen_format", "")),
+        "seatCount": details.get("seat_count"),
+        "adjacentSeats": details.get("adjacent") is True,
+        "seatType": str(details.get("seat_type", "")),
+        "holdExpiresAt": details.get("hold_expires_at"),
+    }
+
+
+def _decimal_text(value: Any, *, default: str | None = None) -> str | None:
+    if value is None:
+        return default
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return default
+    if amount < 0:
+        return default
+    return f"{amount.quantize(Decimal('0.01')):.2f}"

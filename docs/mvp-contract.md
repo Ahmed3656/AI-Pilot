@@ -363,6 +363,18 @@ type EventType =
 Event payloads are exact:
 
 ```ts
+interface NormalizedOfferSnapshot {
+  title: string;
+  sourceUrl: string;
+  match: { exact: boolean; confidence: number; explanation: string };
+  availability: 'available' | 'unavailable' | 'unknown';
+  details: OfferDetails;
+  price: PriceBreakdown;
+  observedAt: Timestamp;
+  exclusionReason: string | null;
+  incompleteFields: string[];
+}
+
 interface EventPayloadMap {
   'run.created': {
     requestedCategory: RequestedCategory;
@@ -429,6 +441,7 @@ interface EventPayloadMap {
     validity: 'valid' | 'excluded' | 'incomplete';
     merchantAttemptId: string;
     evidenceIds: string[];
+    offer?: NormalizedOfferSnapshot;
   };
   'coupon.attempted': {
     couponAttemptId: string;
@@ -486,6 +499,12 @@ interface EventPayloadMap {
   };
 }
 ```
+
+`NormalizedOfferSnapshot` is the normalized title, approved source URL, match, availability,
+category details, price breakdown, observation time, exclusion reason, and incomplete fields used
+to materialize `OfferReport`. It contains no address, authentication, payment, cookie, or other
+secret fields. Older/minimal producers may omit it; the API then preserves the discovery as an
+incomplete offer instead of inventing economic details.
 
 The named supporting enums are defined in the report section. Payloads MUST NOT contain address fields or values, viewer/internal tokens, cookies, authorization headers, payment data, or unredacted screenshot bytes.
 

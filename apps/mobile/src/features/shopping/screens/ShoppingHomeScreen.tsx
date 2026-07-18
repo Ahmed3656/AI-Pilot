@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -21,10 +21,10 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { MessageKey, useLocalization } from '@/localization';
 import { detectShoppingCategory } from '../clarification';
 import {
-  ActiveShoppingRunError,
   createShoppingRun,
+  isActiveShoppingRunError,
+  isShoppingBrowserBusyError,
   replaceActiveShoppingRun,
-  ShoppingBrowserBusyError,
 } from '../shopping.service';
 import {
   CreateShoppingRunRequest,
@@ -62,6 +62,7 @@ export function ShoppingHomeScreen() {
     runId: string;
     request: CreateShoppingRunRequest;
   } | null>(null);
+  const [knownActiveRunId, setKnownActiveRunId] = useState<string | null>(null);
   const [defaultAddress, setDefaultAddress] =
     useState<EgyptAddressRecord | null>(null);
   const addressOwnerId = user?.id ?? 'guest';
@@ -78,6 +79,11 @@ export function ShoppingHomeScreen() {
     user?.email?.trim()[0] ??
     'D'
   ).toLocaleUpperCase();
+
+  useEffect(() => {
+    setKnownActiveRunId(null);
+    setActiveConflict(null);
+  }, [addressOwnerId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -116,23 +122,29 @@ export function ShoppingHomeScreen() {
       locale,
       category: categorySelection,
     };
+    // router.push keeps this home screen mounted underneath the run screen.
+    // If the user goes back without cancelling, offer the explicit recovery
+    // choices immediately instead of attempting a second browser session.
+    if (knownActiveRunId) {
+      setActiveConflict({ runId: knownActiveRunId, request: nextRequest });
+      return;
+    }
     setIsStarting(true);
     try {
       const run = await createShoppingRun(nextRequest);
+      setKnownActiveRunId(run.id);
       router.push(`/run/${run.id}` as Href);
     } catch (error) {
-      if (error instanceof ActiveShoppingRunError) {
+      if (isActiveShoppingRunError(error)) {
+        setKnownActiveRunId(error.runId);
         setActiveConflict({ runId: error.runId, request: nextRequest });
       } else if (error instanceof AuthenticationSessionExpiredError) {
         showToast(t('authSessionExpired'), 'warning', 5000);
       } else {
+        const browserBusy = isShoppingBrowserBusyError(error);
         showToast(
-          t(
-            error instanceof ShoppingBrowserBusyError
-              ? 'shoppingBrowserBusy'
-              : 'startFailed',
-          ),
-          error instanceof ShoppingBrowserBusyError ? 'warning' : 'error',
+          t(browserBusy ? 'shoppingBrowserBusy' : 'startFailed'),
+          browserBusy ? 'warning' : 'error',
         );
       }
     } finally {
@@ -155,15 +167,22 @@ export function ShoppingHomeScreen() {
         activeConflict.runId,
         activeConflict.request,
       );
+      setKnownActiveRunId(run.id);
       setActiveConflict(null);
       router.push(`/run/${run.id}` as Href);
     } catch (error) {
-      if (error instanceof ActiveShoppingRunError) {
+      if (isActiveShoppingRunError(error)) {
+        setKnownActiveRunId(error.runId);
         setActiveConflict((current) =>
           current ? { ...current, runId: error.runId } : current,
         );
       } else {
-        showToast(t('replaceRunFailed'), 'error', 5000);
+        const browserBusy = isShoppingBrowserBusyError(error);
+        showToast(
+          t(browserBusy ? 'shoppingBrowserBusy' : 'replaceRunFailed'),
+          browserBusy ? 'warning' : 'error',
+          5000,
+        );
       }
     } finally {
       setIsReplacing(false);

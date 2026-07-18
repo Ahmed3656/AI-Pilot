@@ -91,7 +91,7 @@ const en = {
   sendRequest: 'Send request',
   startFailed: 'Could not start this run. Check the connection and try again.',
   shoppingBrowserBusy:
-    'Another shopping run is using the merchant browser pool. Try again in a few seconds.',
+    'Another active or paused shopping run is using the merchant browser. Cancel or finish that run before starting a new one.',
   activeRunTitle: 'You already have a running session',
   activeRunBody:
     'Continue the current session, or cancel it and start this new request.',

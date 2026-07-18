@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from agent_ai.models import Candidate, Category
+from agent_ai.orchestrator.request_understanding import parse_delivery_date
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +24,7 @@ def rank_candidates(category: Category, candidates: list[Candidate]) -> RankingR
         for candidate in candidates
         if candidate.valid and candidate.exact_match and candidate.money.is_complete
     ]
-    ordered = tuple(sorted(eligible, key=lambda candidate: candidate.money.total))  # type: ignore[arg-type]
+    ordered = tuple(sorted(eligible, key=lambda candidate: _offer_sort_key(category, candidate)))
     noun = {
         Category.RETAIL: "exact valid retail matches",
         Category.FOOD: "meal and rating matches",
@@ -103,3 +104,23 @@ def _distance(candidate: Candidate) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _offer_sort_key(
+    category: Category,
+    candidate: Candidate,
+) -> tuple[Decimal, str, float, str]:
+    assert candidate.money.total is not None
+    if category is Category.RETAIL:
+        delivery = parse_delivery_date(candidate.details.get("delivery_estimate"))
+        suitability = delivery.isoformat() if delivery else "9999-12-31"
+    else:
+        suitability = str(
+            candidate.details.get("showtime") or candidate.details.get("date") or "9999-12-31"
+        )
+    return (
+        candidate.money.total,
+        suitability,
+        -candidate.match_confidence,
+        candidate.title.casefold(),
+    )

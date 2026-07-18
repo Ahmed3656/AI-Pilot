@@ -4,6 +4,7 @@ import { SHOPPING_STORE, ShoppingStore } from '../repositories';
 import {
   ApprovalStatus,
   ApprovalType,
+  ShoppingCategory,
   ShoppingRunState,
 } from '../shopping.types';
 
@@ -310,9 +311,23 @@ function compareOffers(
     cents(left.price.finalTotal!) - cents(right.price.finalTotal!),
   );
   if (money !== 0) return money;
+  const suitability = offerSuitability(left) - offerSuitability(right);
+  if (suitability !== 0) return suitability;
   if (left.match.confidence !== right.match.confidence)
     return right.match.confidence - left.match.confidence;
   return left.id.localeCompare(right.id);
+}
+
+function offerSuitability(offer: ReturnType<typeof offerView>): number {
+  const value =
+    offer.category === ShoppingCategory.Cinema
+      ? offer.details.showtime
+      : offer.details.deliveryEstimate;
+  if (typeof value !== 'string') return Number.MAX_SAFE_INTEGER;
+  const timestamp = Date.parse(
+    value.length === 10 ? `${value}T23:59:59+03:00` : value,
+  );
+  return Number.isNaN(timestamp) ? Number.MAX_SAFE_INTEGER : timestamp;
 }
 
 function stringArray(value: unknown): string[] {

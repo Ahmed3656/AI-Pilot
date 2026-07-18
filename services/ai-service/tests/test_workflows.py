@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 from agent_ai.models import Category
 from agent_ai.workflows.specs import validate_agent_result, workflow_instructions
@@ -188,6 +189,43 @@ def test_missing_retail_payment_info_gets_a_safe_empty_summary() -> None:
         "discount_offers": [],
         "protection_plans": [],
     }
+
+
+def test_retail_ranking_enforces_query_budget_storage_and_delivery_deadline() -> None:
+    matching = _candidate("amazon.eg", "24900")
+    matching["title"] = "Samsung Galaxy A55 5G 256GB"
+    matching["details"].update(
+        {
+            "brand": "Samsung",
+            "model": "A55",
+            "storage": "256 GB",
+            "delivery_estimate": "2026-07-23",
+        }
+    )
+    over_budget = _candidate("jumia.com.eg", "25100")
+    over_budget["title"] = "Samsung Galaxy A55 5G 256GB"
+    over_budget["details"].update(matching["details"])
+    wrong_storage = _candidate("noon.com", "23000")
+    wrong_storage["title"] = "Samsung Galaxy A55 5G 128GB"
+    wrong_storage["details"].update({**matching["details"], "storage": "128 GB"})
+
+    result = validate_agent_result(
+        Category.RETAIL,
+        json.dumps({"candidates": [over_budget, wrong_storage, matching]}),
+        query="Find a Samsung A55 256 GB under 25,000 EGP, delivered by Thursday",
+        reference=date(2026, 7, 18),
+    )
+
+    assert result["winner"]["merchant"] == "amazon.eg"
+    assert result["interpreted_constraints"] == {
+        "brand": "Samsung",
+        "model": "A55",
+        "storage_gb": 256,
+        "max_total": "25000.00",
+        "delivery_deadline": "2026-07-23",
+    }
+    assert result["candidates"][0]["exclusion_reason"] == "BUDGET_EXCEEDED"
+    assert result["candidates"][1]["exclusion_reason"] == "STORAGE_MISMATCH"
 
 
 def test_food_menu_prices_are_ranked_by_verified_proximity_without_fake_fees() -> None:

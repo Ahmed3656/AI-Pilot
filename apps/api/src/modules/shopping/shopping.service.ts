@@ -1039,6 +1039,13 @@ export class ShoppingService implements OnModuleDestroy {
         );
         if (!attempt) break;
         const incomingValidity = String(dto.payload.validity);
+        const snapshot = materializedOfferSnapshot(
+          dto.payload.offer,
+          attempt,
+          incomingValidity,
+          dto.payload.evidenceIds as string[],
+          dto.timestamp,
+        );
         await this.store.saveOffer({
           id: String(dto.payload.offerId),
           runId: run.id,
@@ -1046,17 +1053,18 @@ export class ShoppingService implements OnModuleDestroy {
           merchantName: attempt.merchantName,
           merchantDomain: attempt.merchantDomain,
           category: attempt.category,
-          title: `Offer ${String(dto.payload.offerId)}`,
-          sourceUrl: `https://${attempt.merchantDomain}/`,
-          match: {
+          title: snapshot?.title ?? `Offer ${String(dto.payload.offerId)}`,
+          sourceUrl:
+            snapshot?.sourceUrl ?? `https://${attempt.merchantDomain}/`,
+          match: snapshot?.match ?? {
             exact: false,
             confidence: 0,
             explanation:
               'The canonical event confirms discovery but carries no economic detail.',
           },
-          availability: 'unknown',
-          details: incompleteDetails(attempt.category),
-          price: {
+          availability: snapshot?.availability ?? 'unknown',
+          details: snapshot?.details ?? incompleteDetails(attempt.category),
+          price: snapshot?.price ?? {
             itemSubtotal: '0.00',
             deliveryFee: null,
             serviceFee: null,
@@ -1069,13 +1077,17 @@ export class ShoppingService implements OnModuleDestroy {
             finalTotal: null,
           },
           validity: incomingValidity === 'excluded' ? 'excluded' : 'incomplete',
-          observedAt: new Date(dto.timestamp),
+          observedAt: snapshot?.observedAt ?? new Date(dto.timestamp),
           evidenceIds: dto.payload.evidenceIds as string[],
           exclusionReason:
-            incomingValidity === 'excluded'
+            snapshot?.exclusionReason ??
+            (incomingValidity === 'excluded'
               ? 'The AI classified this offer outside the comparison scope.'
-              : null,
-          incompleteFields: ['economicDetails'],
+              : null),
+          incompleteFields: snapshot?.incompleteFields ?? ['economicDetails'],
+          ...(snapshot && incomingValidity === 'valid'
+            ? { validity: 'valid' as const }
+            : {}),
         });
         break;
       }
@@ -1454,7 +1466,7 @@ function classify(query: string): ShoppingCategory | null {
     ],
     [
       ShoppingCategory.Retail,
-      /\b(buy|phone|laptop|television|tv|product|amazon|jumia|noon)\b|شراء|هاتف|موبايل|لابتوب|منتج|تلفزيون/iu,
+      /\b(buy|phone|laptop|television|tv|product|amazon|jumia|noon|samsung|galaxy|xiaomi|redmi|oppo|realme|honor|huawei)\b|\b(?:galaxy\s+)?[asmz]\s?\d{2,3}(?:\s*(?:5g|fe|ultra|plus))?\b|\b\d{2,4}\s*(?:gb|gigabytes?)\b|شراء|هاتف|موبايل|لابتوب|منتج|تلفزيون/iu,
     ],
   ];
   const matches = groups.filter(([, pattern]) => pattern.test(text));
@@ -1525,6 +1537,7 @@ const EVENT_KEYS: Record<
   },
   'offer.recorded': {
     required: ['offerId', 'validity', 'merchantAttemptId', 'evidenceIds'],
+    optional: ['offer'],
   },
   'coupon.attempted': {
     required: [
@@ -1588,11 +1601,11 @@ function assertEventPayload(
   type: EventType,
   payload: Record<string, unknown>,
 ): void {
-  const required = EVENT_KEYS[type].required;
-  const allowed = [...required, ...(EVENT_KEYS[type].optional ?? [])];
+  const schema = EVENT_KEYS[type];
+  const allowed = [...schema.required, ...(schema.optional ?? [])];
   const keys = Object.keys(payload);
   if (
-    required.some((key) => !(key in payload)) ||
+    schema.required.some((key) => !(key in payload)) ||
     keys.some((key) => !allowed.includes(key))
   ) {
     invalidEvent(type);
@@ -1683,7 +1696,8 @@ function assertEventPayload(
           String(payload.validity),
         ) ||
         !isString(payload.merchantAttemptId) ||
-        !isStringArray(payload.evidenceIds, true)
+        !isStringArray(payload.evidenceIds, true) ||
+        (payload.offer !== undefined && !isObjectRecord(payload.offer))
       )
         invalidEvent(type);
       break;
@@ -1862,4 +1876,110 @@ function incompleteDetails(
     seatType: '',
     holdExpiresAt: null,
   };
+}
+
+function materializedOfferSnapshot(
+  value: unknown,
+  attempt: {
+    category: ShoppingCategory;
+    merchantDomain: string;
+  },
+  validity: string,
+  evidenceIds: string[],
+  timestamp: string,
+) {
+  if (!isObjectRecord(value)) return null;
+  const match = isObjectRecord(value.match) ? value.match : {};
+  const price = isObjectRecord(value.price) ? value.price : {};
+  const details = isObjectRecord(value.details)
+    ? value.details
+    : incompleteDetails(attempt.category);
+  const confidence = Number(match.confidence);
+  const mandatoryFees = Array.isArray(price.mandatoryFees)
+    ? price.mandatoryFees.filter(isObjectRecord).map((fee) => ({
+        label: safeText(fee.label, 'mandatory fee', 200),
+        amount: moneyText(fee.amount, '0.00')!,
+        evidenceIds: snapshotStringArray(fee.evidenceIds),
+      }))
+    : [];
+  const observedAt = isTimestamp(value.observedAt)
+    ? new Date(value.observedAt)
+    : new Date(timestamp);
+  const availability = ['available', 'unavailable', 'unknown'].includes(
+    String(value.availability),
+  )
+    ? (String(value.availability) as 'available' | 'unavailable' | 'unknown')
+    : 'unknown';
+  return {
+    title: safeText(value.title, 'Discovered offer', 1_000),
+    sourceUrl: safeText(
+      value.sourceUrl,
+      `https://${attempt.merchantDomain}/`,
+      4_000,
+    ),
+    match: {
+      exact: match.exact === true,
+      confidence: Number.isFinite(confidence)
+        ? Math.min(1, Math.max(0, confidence))
+        : 0,
+      explanation: safeText(
+        match.explanation,
+        'Compared with the user request.',
+        1_000,
+      ),
+    },
+    availability,
+    details,
+    price: {
+      itemSubtotal: moneyText(price.itemSubtotal, '0.00')!,
+      deliveryFee: moneyText(price.deliveryFee),
+      serviceFee: moneyText(price.serviceFee),
+      bookingFee: moneyText(price.bookingFee),
+      tax: moneyText(price.tax),
+      mandatoryFees,
+      verifiedDiscount: moneyText(price.verifiedDiscount, '0.00')!,
+      optionalTip:
+        attempt.category === ShoppingCategory.Food ? ('0.00' as const) : null,
+      finalTotal: moneyText(price.finalTotal),
+    },
+    observedAt,
+    exclusionReason:
+      validity === 'excluded'
+        ? safeText(
+            value.exclusionReason,
+            'Offer did not meet the parsed constraints.',
+            1_000,
+          )
+        : null,
+    incompleteFields: snapshotStringArray(value.incompleteFields),
+    evidenceIds,
+  };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function safeText(value: unknown, fallback: string, maxLength: number): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return (text || fallback).slice(0, maxLength);
+}
+
+function moneyText(
+  value: unknown,
+  fallback: string | null = null,
+): string | null {
+  return typeof value === 'string' && /^(?:0|[1-9]\d*)\.\d{2}$/.test(value)
+    ? value
+    : fallback;
+}
+
+function snapshotStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [
+        ...new Set(
+          value.filter((item): item is string => typeof item === 'string'),
+        ),
+      ]
+    : [];
 }

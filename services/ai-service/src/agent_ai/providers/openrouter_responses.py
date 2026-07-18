@@ -9,6 +9,7 @@ from openai import AsyncOpenAI
 from agent_ai.browser.safety import PauseRequired
 from agent_ai.browser.selenium_remote import BrowserActionExecutor, VisualFallbackRequired
 from agent_ai.models import Category, PauseReason
+from agent_ai.orchestrator.request_understanding import interpret_retail_query
 from agent_ai.vision import (
     OpenRouterVisionFallbackLocator,
     VisionFallbackLocator,
@@ -243,12 +244,18 @@ class OpenRouterComputerAgent:
             else "No address grant is available. If a verified total requires an address, focus "
             "the appropriate field and use {{secret:street}} so the harness pauses for consent."
         )
+        constraint_note = ""
+        if category is Category.RETAIL:
+            constraint_note = interpret_retail_query(query).prompt_context()
         initial_screenshot = await executor.capture()
         history: list[Any] = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": f"User request:\n{query}\n\n{address_note}"},
+                    {
+                        "type": "input_text",
+                        "text": (f"User request:\n{query}\n\n{constraint_note}\n\n{address_note}"),
+                    },
                     {
                         "type": "input_image",
                         "image_url": initial_screenshot,

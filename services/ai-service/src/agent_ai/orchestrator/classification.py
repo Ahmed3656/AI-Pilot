@@ -20,6 +20,14 @@ _TERMS: dict[Category, tuple[str, ...]] = {
         "laptop",
         "television",
         "headphones",
+        "samsung",
+        "galaxy",
+        "xiaomi",
+        "redmi",
+        "oppo",
+        "realme",
+        "honor",
+        "huawei",
         "اشتري",
         "شراء",
         "منتج",
@@ -78,6 +86,15 @@ _TERMS: dict[Category, tuple[str, ...]] = {
     ),
 }
 
+_PATTERNS: dict[Category, tuple[re.Pattern[str], ...]] = {
+    Category.RETAIL: (
+        re.compile(r"(?<!\w)(?:galaxy\s+)?[asmz]\s?\d{2,3}(?:\s*(?:5g|fe|ultra|plus))?(?!\w)"),
+        re.compile(r"(?<!\w)\d{2,4}\s*(?:gb|gigabytes?)(?!\w)"),
+    ),
+    Category.FOOD: (),
+    Category.CINEMA: (),
+}
+
 
 def classify_request(query: str) -> Category | None:
     """Return one safe category or None when zero/multiple categories are plausible."""
@@ -86,7 +103,7 @@ def classify_request(query: str) -> Category | None:
     for category, terms in _TERMS.items():
         scores[category] = sum(
             1 for term in terms if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", folded)
-        )
+        ) + sum(1 for pattern in _PATTERNS[category] if pattern.search(folded))
     matches = [category for category, score in scores.items() if score > 0]
     if len(matches) != 1:
         return None

@@ -49,6 +49,26 @@ export class ShoppingBrowserBusyError extends Error {
   }
 }
 
+export function isActiveShoppingRunError(
+  error: unknown,
+): error is ActiveShoppingRunError {
+  return (
+    error instanceof ActiveShoppingRunError ||
+    (error instanceof Error &&
+      error.name === 'ActiveShoppingRunError' &&
+      typeof (error as Partial<ActiveShoppingRunError>).runId === 'string')
+  );
+}
+
+export function isShoppingBrowserBusyError(
+  error: unknown,
+): error is ShoppingBrowserBusyError {
+  return (
+    error instanceof ShoppingBrowserBusyError ||
+    (error instanceof Error && error.name === 'ShoppingBrowserBusyError')
+  );
+}
+
 const EVENT_TYPES: EventType[] = [
   'run.created',
   'run.clarification_required',
