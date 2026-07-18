@@ -11,6 +11,7 @@ import { ApprovalCard } from '../components/ApprovalCard';
 import { RemoteBrowser } from '../components/RemoteBrowser';
 import { RunTimeline } from '../components/RunTimeline';
 import { LanguageToggle, SectionHeading } from '../components/ShoppingControls';
+import { warningListKey } from '../report';
 import {
   approveDomains,
   approveSeatHold,
@@ -340,9 +341,9 @@ export function ShoppingRunScreen() {
           {report.data?.warnings.length ? (
             <Card>
               <SectionHeading title={t('warnings')} />
-              {report.data.warnings.map((warning) => (
+              {report.data.warnings.map((warning, index) => (
                 <Text
-                  key={`${warning.code}-${warning.message}`}
+                  key={warningListKey(warning, index)}
                   style={[
                     styles.listItem,
                     textDirection,
