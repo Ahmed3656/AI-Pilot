@@ -77,7 +77,7 @@ async def create_run(
         return contract_error(
             request,
             "RATE_LIMITED",
-            "The single MVP browser is busy; retry this queued run later",
+            "The merchant browser pool is busy; retry this queued run later",
             status.HTTP_429_TOO_MANY_REQUESTS,
             details=[
                 {

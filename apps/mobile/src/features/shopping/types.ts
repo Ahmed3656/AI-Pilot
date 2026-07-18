@@ -91,6 +91,15 @@ export type PendingAction =
       merchantDomain: string;
       holdDurationSeconds: number | null;
     }
+  | {
+      type: 'browser_takeover';
+      requestId: string;
+      merchantAttemptId: string;
+      merchantName: string;
+      merchantDomain: string;
+      reasonCode: string;
+      message: string;
+    }
   | { type: 'handoff'; requestId: string };
 
 export interface RunResource {
@@ -276,11 +285,13 @@ export interface EventPayloadMap {
     message: string;
     merchantAttemptId: string | null;
     evidenceIds: string[];
+    requiresUserInput?: boolean;
   };
   'control.claimed': {
     leaseId: string;
     holderUserId: string;
     expiresAt: string;
+    merchantAttemptId: string;
   };
   'control.renewed': { leaseId: string; expiresAt: string };
   'control.released': {

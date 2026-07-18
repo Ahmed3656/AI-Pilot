@@ -25,6 +25,18 @@ export class RunControlDto {
 }
 
 export class ClaimControlDto {
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  requestId!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  merchantAttemptId!: string;
+
   @ApiPropertyOptional({ minimum: 60, maximum: 900, default: 120 })
   @IsOptional()
   @IsInt()

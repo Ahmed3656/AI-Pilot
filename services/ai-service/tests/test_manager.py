@@ -13,6 +13,7 @@ from agent_ai.config.settings import Settings
 from agent_ai.models import Category, PauseReason, RequestedCategory, RunStatus
 from agent_ai.orchestrator.manager import (
     IdempotencyConflictError,
+    InvalidTransitionError,
     RunBusyError,
     RunManager,
 )
@@ -45,6 +46,7 @@ class FakeBrowser:
         self.expected_domain: str | None = None
         self.closed = False
         self.connect_count = 0
+        self.focus_count = 0
         self.driver = SimpleNamespace(session_id=session_id)
 
     @property
@@ -69,8 +71,23 @@ class FakeBrowser:
         self.urls.append(url)
         self.expected_domain = domain
 
+    def load_deterministic_test_fixture(
+        self,
+        domain: str,
+        category: Category,
+        approved_domains: set[str],
+    ) -> None:
+        assert category is Category.RETAIL
+        assert approved_domains == {domain}
+        self.urls.append(f"fixture://{domain}")
+        self.expected_domain = domain
+
     def close(self) -> None:
         self.closed = True
+
+    def focus_for_takeover(self) -> None:
+        assert not self.closed
+        self.focus_count += 1
 
     def guard(self, category: Category, approved_domains: set[str]) -> None:
         assert category is Category.RETAIL
@@ -166,6 +183,65 @@ class FailAgent(FakeAgent):
         raise RuntimeError("provider failed before producing results")
 
 
+class ParallelMerchantAgent:
+    last_response_id = "parallel-response"
+    active = 0
+    peak = 0
+
+    async def run(self, **kwargs: Any) -> str:
+        type(self).active += 1
+        type(self).peak = max(type(self).peak, type(self).active)
+        try:
+            await asyncio.sleep(0.05)
+            domain = kwargs["executor"].browser.expected_domain
+            if domain == "jumia.com.eg":
+                raise RuntimeError("simulated isolated merchant failure")
+            return _merchant_result(domain)
+        finally:
+            type(self).active -= 1
+
+
+def _merchant_result(domain: str) -> str:
+    return json.dumps(
+        {
+            "candidates": [
+                {
+                    "merchant": domain,
+                    "title": f"Exact item from {domain}",
+                    "url": f"https://{domain}/item",
+                    "exact_match": True,
+                    "valid": True,
+                    "subtotal": "1000.00",
+                    "delivery_fee": "25.00",
+                    "service_fee": "0.00",
+                    "booking_fee": "0.00",
+                    "tax": "0.00",
+                    "mandatory_fees": [],
+                    "discount": "0.00",
+                    "total": "1025.00",
+                    "currency": "EGP",
+                    "evidence_ids": [f"evidence:{domain}"],
+                    "details": {
+                        "brand": "Brand",
+                        "model": "X",
+                        "variant": "128 GB",
+                        "storage": "128 GB",
+                        "size": "not applicable",
+                        "color": "black",
+                        "quantity": 1,
+                        "stock": True,
+                        "seller_condition": "new",
+                        "delivery_estimate": "tomorrow",
+                    },
+                }
+            ],
+            "coupon_attempts": [],
+            "stopped_before": "payment",
+            "notes": [],
+        }
+    )
+
+
 def _request(run_id: str = "run-1", query: str = "Find an exact phone") -> Any:
     return InternalCreateRunRequest.model_validate(
         {
@@ -250,8 +326,10 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
 
     assert browser.urls == ["https://www.amazon.eg/s?k=Find+an+exact+phone"]
+    assert browser.connect_count == 1
     assert browser.closed is False
     assert browser.session_id == session_id
+    assert record.agent is not None
     assert record.agent.last_response_id == "response-chain-1"
     event_types = [event_type for _, event_type, _, _ in control.events]
     assert event_types.index("report.updated") < event_types.index("run.status_changed")
@@ -266,23 +344,25 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
         "reasonCode": None,
     }
 
-    await manager.command(
-        "run-1",
-        _command("claim-1", "run-1", "pause", {"reason": "control_claim"}),
-        "claim-1",
-    )
-    assert record.status is RunStatus.USER_TAKEOVER
+    with pytest.raises(InvalidTransitionError, match="user-input pause"):
+        await manager.command(
+            "run-1",
+            _command(
+                "claim-1",
+                "run-1",
+                "pause",
+                {
+                    "reason": "control_claim",
+                    "merchantAttemptId": record.attempts["amazon.eg"].id,
+                    "merchantDomain": "amazon.eg",
+                },
+            ),
+            "claim-1",
+        )
+    assert record.status is RunStatus.READY_FOR_HANDOFF
     assert browser.session_id == session_id
     assert browser.closed is False
-
-    await manager.command(
-        "run-1",
-        _command("release-1", "run-1", "resume", {"reason": "control_release"}),
-        "release-1",
-    )
-    assert record.status is RunStatus.READY_FOR_HANDOFF
-    assert record.active_event.is_set()
-    assert browser.session_id == session_id
+    assert browser.focus_count == 0
 
     await manager.command(
         "run-1",
@@ -298,6 +378,73 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     assert browser.closed is True
     assert record.address_handle is None
     assert any(event_type == "offer.recorded" for _, event_type, _, _ in control.events)
+
+
+@pytest.mark.asyncio
+async def test_selected_merchants_use_parallel_isolated_browser_workers() -> None:
+    control = FakeControl()
+    browsers: list[FakeBrowser] = []
+
+    def browser_factory() -> FakeBrowser:
+        browser = FakeBrowser(f"selenium-session-{len(browsers) + 1}")
+        browsers.append(browser)
+        return browser
+
+    ParallelMerchantAgent.active = 0
+    ParallelMerchantAgent.peak = 0
+    manager = RunManager(
+        Settings(
+            environment="development",
+            internal_token="token",
+            openrouter_api_key="fake",
+        ),
+        control,  # type: ignore[arg-type]
+        agent_factory=ParallelMerchantAgent,
+        browser_factory=browser_factory,  # type: ignore[arg-type]
+    )
+    await manager.create_run(_request(), "run-1")
+    await manager.start("run-1")
+    await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
+    record = manager.get_record("run-1")
+    await manager.command(
+        "run-1",
+        _command(
+            "approve-1",
+            "run-1",
+            "approve_domains",
+            {
+                "approvalId": "approval-1",
+                "requestId": record.domain_request_id,
+                "domains": ["amazon.eg", "jumia.com.eg", "noon.com"],
+            },
+        ),
+        "approve-1",
+    )
+    await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
+
+    assert len(browsers) == 3
+    assert all(browser.connect_count == 1 for browser in browsers)
+    assert len({browser.session_id for browser in browsers}) == 3
+    assert ParallelMerchantAgent.peak == 3
+    assert set(record.workers) == {"amazon.eg", "jumia.com.eg", "noon.com"}
+    assert record.workers["jumia.com.eg"].error is not None
+    assert record.result is not None
+    assert record.result["partial"] is True
+    assert {candidate["merchant"] for candidate in record.result["candidates"]} == {
+        "amazon.eg",
+        "noon.com",
+    }
+    completions = [
+        payload
+        for _, event_type, payload, _ in control.events
+        if event_type == "merchant.attempt_completed"
+    ]
+    assert sorted(payload["outcome"] for payload in completions) == [
+        "failed",
+        "succeeded",
+        "succeeded",
+    ]
+    await manager.aclose()
 
 
 @pytest.mark.asyncio
@@ -332,10 +479,20 @@ async def test_captcha_pause_allows_takeover_then_continues_same_attempt() -> No
 
     await manager.command(
         "run-1",
-        _command("claim-1", "run-1", "pause", {"reason": "control_claim"}),
+        _command(
+            "claim-1",
+            "run-1",
+            "pause",
+            {
+                "reason": "control_claim",
+                "merchantAttemptId": record.attempts["amazon.eg"].id,
+                "merchantDomain": "amazon.eg",
+            },
+        ),
         "claim-1",
     )
     assert record.status is RunStatus.USER_TAKEOVER
+    assert browser.focus_count == 1
     browser.captcha_solved = True
     await manager.command(
         "run-1",
@@ -388,7 +545,7 @@ async def test_one_active_run_busy_response_and_idempotent_create() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ttl_is_terminal_and_closes_the_only_session() -> None:
+async def test_ttl_is_terminal_and_closes_all_selected_merchant_sessions() -> None:
     browser = FakeBrowser()
     manager = RunManager(
         Settings(internal_token="token", openrouter_api_key="fake"),
@@ -397,8 +554,25 @@ async def test_ttl_is_terminal_and_closes_the_only_session() -> None:
         browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]
     )
     await manager.create_run(_request(), "run-1")
-    await manager.expire_now("run-1")
+    await manager.start("run-1")
+    await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
     record = manager.get_record("run-1")
+    await manager.command(
+        "run-1",
+        _command(
+            "approve-1",
+            "run-1",
+            "approve_domains",
+            {
+                "approvalId": "approval-1",
+                "requestId": record.domain_request_id,
+                "domains": ["amazon.eg"],
+            },
+        ),
+        "approve-1",
+    )
+    await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
+    await manager.expire_now("run-1")
     assert record.status is RunStatus.FAILED
     assert record.error == "Browser TTL expired"
     assert browser.closed is True
@@ -415,8 +589,25 @@ async def test_service_shutdown_transitions_run_to_terminal_before_close() -> No
         browser_factory=lambda: browser,  # type: ignore[arg-type,return-value]
     )
     await manager.create_run(_request(), "run-1")
-    await manager.aclose()
+    await manager.start("run-1")
+    await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
     record = manager.get_record("run-1")
+    await manager.command(
+        "run-1",
+        _command(
+            "approve-1",
+            "run-1",
+            "approve_domains",
+            {
+                "approvalId": "approval-1",
+                "requestId": record.domain_request_id,
+                "domains": ["amazon.eg"],
+            },
+        ),
+        "approve-1",
+    )
+    await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
+    await manager.aclose()
     assert record.status is RunStatus.FAILED
     assert browser.closed is True
     failed = [payload for _, event_type, payload, _ in control.events if event_type == "run.failed"]
@@ -553,6 +744,7 @@ async def test_safety_pause_transitions_before_warning_without_failing_run() -> 
         "run.warning",
     ]
     assert all(status is RunStatus.PAUSED for *_, status in control.events)
+    assert control.events[1][2]["requiresUserInput"] is True
     assert record.status is RunStatus.PAUSED
     assert record.error is None
     paused.cancel()
@@ -600,7 +792,7 @@ async def test_failed_run_finalizes_started_merchant_attempts() -> None:
         {
             "attemptId": next(iter(record.attempts.values())).id,
             "outcome": "failed",
-            "failureCode": "AI_RUN_FAILED",
+            "failureCode": "MERCHANT_RUN_FAILED",
             "evidenceIds": [],
         }
     ]

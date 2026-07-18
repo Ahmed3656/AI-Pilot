@@ -12,6 +12,7 @@ import {
 } from '../shopping.service';
 import {
   ControlLease,
+  PendingAction,
   RunResource,
   RunStatus,
   ViewerTokenResponse,
@@ -28,16 +29,21 @@ function noVncUrl(uri: string, viewOnly: boolean): string {
 }
 
 const TERMINAL_STATUSES: RunStatus[] = ['completed', 'cancelled', 'failed'];
-const TAKEOVER_STATUSES: RunStatus[] = ['ready_for_handoff', 'paused'];
+type BrowserTakeoverAction = Extract<
+  PendingAction,
+  { type: 'browser_takeover' }
+>;
 
 export function RemoteBrowser({
   runId,
   status,
+  takeoverAction,
   expiredLeaseId,
   onRunChanged,
 }: {
   runId: string;
   status: RunStatus;
+  takeoverAction?: BrowserTakeoverAction;
   expiredLeaseId?: string;
   onRunChanged: (run: RunResource) => void;
 }) {
@@ -117,7 +123,12 @@ export function RemoteBrowser({
     setBusy(true);
     let claimedLease: ControlLease | null = null;
     try {
-      const claim = await claimControl(runId);
+      if (!takeoverAction) return;
+      const claim = await claimControl(
+        runId,
+        takeoverAction.requestId,
+        takeoverAction.merchantAttemptId,
+      );
       claimedLease = claim.lease;
       onRunChanged(claim.run);
       const controlViewer = await createViewerToken(
@@ -190,6 +201,42 @@ export function RemoteBrowser({
           {t(hasControl ? 'controlActive' : 'viewOnly')}
         </Text>
       </View>
+      {takeoverAction ? (
+        <View
+          style={[
+            styles.takeoverRequest,
+            { backgroundColor: theme.colors.warningSurface },
+          ]}
+        >
+          <Text
+            style={[
+              styles.warningTitle,
+              textDirection,
+              { color: theme.colors.warning },
+            ]}
+          >
+            {t('manualInputRequired')}
+          </Text>
+          <Text
+            style={[
+              styles.warningBody,
+              textDirection,
+              { color: theme.colors.text },
+            ]}
+          >
+            {takeoverAction.merchantName} · {takeoverAction.message}
+          </Text>
+          <Text
+            style={[
+              styles.takeoverDomain,
+              textDirection,
+              { color: theme.colors.muted },
+            ]}
+          >
+            {takeoverAction.merchantDomain}
+          </Text>
+        </View>
+      ) : null}
       {activeUrl && viewer && viewerOrigin ? (
         <BrowserViewer
           borderColor={theme.colors.border}
@@ -216,18 +263,18 @@ export function RemoteBrowser({
           </Text>
         </View>
       )}
-      <AppButton
-        disabled={
-          busy ||
-          (hasControl ? false : !TAKEOVER_STATUSES.includes(status)) ||
-          !viewer
-        }
-        label={
-          busy ? t('takingOver') : t(hasControl ? 'releaseControl' : 'takeOver')
-        }
-        onPress={() => void (hasControl ? release() : takeOver())}
-        variant={hasControl ? 'secondary' : 'primary'}
-      />
+      {hasControl || takeoverAction ? (
+        <AppButton
+          disabled={busy || (!hasControl && status !== 'paused') || !viewer}
+          label={
+            busy
+              ? t('takingOver')
+              : t(hasControl ? 'releaseControl' : 'takeOver')
+          }
+          onPress={() => void (hasControl ? release() : takeOver())}
+          variant={hasControl ? 'secondary' : 'primary'}
+        />
+      ) : null}
       <View
         style={[
           styles.paymentWarning,
@@ -268,6 +315,8 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   placeholderText: { fontSize: 14, lineHeight: 20 },
+  takeoverRequest: { borderRadius: 12, padding: 14, gap: 5 },
+  takeoverDomain: { fontSize: 12, lineHeight: 18, fontWeight: '700' },
   paymentWarning: { borderRadius: 12, padding: 14, gap: 5 },
   warningTitle: { fontSize: 16, fontWeight: '900' },
   warningBody: { fontSize: 14, lineHeight: 21, fontWeight: '600' },

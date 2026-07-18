@@ -85,14 +85,14 @@ async function proveFailedInternalCommandDoesNotAdvance(token) {
   const before = await mobileRequest(`/shopping/runs/${run.id}`, { token });
   assert.equal(before.run.status, 'ready_for_handoff');
   completeAiOnly(run.id, 'integration-direct-complete-v1');
-  const failedClaim = await request(`/shopping/runs/${run.id}/control/claim`, {
+  const failedComplete = await request(`/shopping/runs/${run.id}/control`, {
     method: 'POST',
     token,
-    idempotencyKey: uniqueKey('failed-claim'),
-    body: {},
+    idempotencyKey: uniqueKey('failed-complete'),
+    body: { action: 'complete' },
     allow: [502],
   });
-  assert.equal(failedClaim.body.error.code, 'AI_COMMAND_REJECTED');
+  assert.equal(failedComplete.body.error.code, 'AI_COMMAND_REJECTED');
   const after = await mobileRequest(`/shopping/runs/${run.id}`, { token });
   assert.equal(after.run.status, before.run.status);
   console.log('PASS internal command rejection leaves API state unchanged.');
@@ -109,16 +109,15 @@ async function seedDemoRun(token) {
     token,
   });
   assert.equal(report.status, 'final');
-  assert.ok(report.incompleteOffers.length >= 1);
-  assert.ok(
+  assert.ok(report.incompleteOffers.length >= 2);
+  assert.equal(
     report.partialFailures.some(
       (failure) => failure.code === 'TEST_MERCHANT_UNAVAILABLE',
     ),
+    false,
   );
   assert.ok(report.evidence.every((item) => item.redacted === true));
-  console.log(
-    'PASS partial merchant failure and incomplete offer remain visible.',
-  );
+  console.log('PASS selected merchants complete in isolated browser workers.');
   return run;
 }
 
@@ -180,22 +179,60 @@ async function proveWebSocketAndSameBrowserControl(token, run) {
   );
 
   const socket = await openEvents(run.id, viewToken.token, cursor);
-  const sessionBefore = seleniumSessionId();
+  const sessionsBefore = seleniumSessionIds().sort();
+  assert.equal(sessionsBefore.length, 2);
   runPhase1Health();
   console.log(
-    'PASS health remains green while the single Selenium slot is occupied.',
+    'PASS health remains green while merchant sessions are occupied.',
   );
+
+  const denied = await request(`/shopping/runs/${run.id}/control/claim`, {
+    method: 'POST',
+    token,
+    idempotencyKey: uniqueKey('unrequested-claim'),
+    body: { requestId: 'not-requested', merchantAttemptId: 'not-requested' },
+    allow: [409],
+  });
+  assert.equal(denied.body.error.code, 'INVALID_RUN_TRANSITION');
+
+  const report = await mobileRequest(`/shopping/runs/${run.id}/report`, {
+    token,
+  });
+  const target = report.merchantAttempts[0];
+  assert.ok(target?.id);
+  await request(`/shopping/runs/${run.id}/control`, {
+    method: 'POST',
+    token,
+    idempotencyKey: uniqueKey('pause-for-input'),
+    body: { action: 'pause', reason: 'deterministic_manual_input_check' },
+  });
+  const takeoverRequestId = uniqueKey('takeover-warning');
+  emitManualInputWarning(run.id, target.id, takeoverRequestId);
+  const paused = await waitForRun(
+    token,
+    run.id,
+    (value) =>
+      value.status === 'paused' &&
+      value.pendingAction?.type === 'browser_takeover',
+  );
+  assert.equal(paused.pendingAction.merchantName, target.merchantName);
+  assert.equal(paused.pendingAction.merchantDomain, target.merchantDomain);
+
   const claimedPromise = nextEvent(socket, 'control.claimed');
   const claimed = (
     await request(`/shopping/runs/${run.id}/control/claim`, {
       method: 'POST',
       token,
       idempotencyKey: uniqueKey('claim'),
-      body: { requestedLeaseSeconds: 120 },
+      body: {
+        requestId: takeoverRequestId,
+        merchantAttemptId: target.id,
+        requestedLeaseSeconds: 120,
+      },
     })
   ).body;
   assert.equal((await claimedPromise).status, 'user_takeover');
-  assert.equal(seleniumSessionId(), sessionBefore);
+  assert.deepEqual(seleniumSessionIds().sort(), sessionsBefore);
   socket.close(1000);
   await waitForSocketClose(socket);
 
@@ -235,7 +272,7 @@ async function proveWebSocketAndSameBrowserControl(token, run) {
   assert.equal(released.run.status, 'ready_for_handoff');
   assert.equal(released.lease.status, 'released');
   assert.equal((await releasedPromise).payload.recovery, 'resumed');
-  assert.equal(seleniumSessionId(), sessionBefore);
+  assert.deepEqual(seleniumSessionIds().sort(), sessionsBefore);
   reconnected.close(1000);
   await waitForSocketClose(reconnected);
 
@@ -250,7 +287,7 @@ async function proveWebSocketAndSameBrowserControl(token, run) {
     history.events.length,
   );
   console.log(
-    'PASS WebSocket live delivery, reconnect replay, REST history, and same-browser release/resume.',
+    'PASS WebSocket delivery, replay, and same-session release/resume.',
   );
 
   const completed = (
@@ -272,7 +309,7 @@ async function proveWebSocketAndSameBrowserControl(token, run) {
   assert.equal(retainedReport.status, 'final');
   assert.ok(retainedReport.incompleteOffers.length >= 1);
   console.log(
-    'PASS completed seeded report remains available and the browser session closes.',
+    'PASS completed seeded report remains available and all browser sessions close.',
   );
 }
 
@@ -403,16 +440,6 @@ function waitForSocketClose(socket) {
   });
 }
 
-function seleniumSessionId() {
-  const sessions = seleniumSessionIds();
-  assert.equal(
-    sessions.length,
-    1,
-    `expected one Selenium session, got ${sessions.length}`,
-  );
-  return sessions[0];
-}
-
 function seleniumSessionIds() {
   const python = [
     'import json, urllib.request',
@@ -445,6 +472,31 @@ function completeAiOnly(runId, commandId) {
     python,
     runId,
     commandId,
+  ]);
+}
+
+function emitManualInputWarning(runId, merchantAttemptId, eventId) {
+  const python = [
+    'import datetime, json, os, sys, urllib.request',
+    'run_id=sys.argv[1]',
+    'attempt_id=sys.argv[2]',
+    'event_id=sys.argv[3]',
+    "timestamp=datetime.datetime.now(datetime.UTC).isoformat().replace('+00:00', 'Z')",
+    "body={'id':event_id,'runId':run_id,'type':'run.warning','status':'paused','timestamp':timestamp,'payload':{'code':'captcha_detected','message':'Deterministic human-verification check','merchantAttemptId':attempt_id,'evidenceIds':[],'requiresUserInput':True}}",
+    "request=urllib.request.Request('http://api:3000/internal/v1/ai-events',data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Internal-Token':os.environ['AI_INTERNAL_TOKEN']},method='POST')",
+    'response=urllib.request.urlopen(request)',
+    'assert response.status == 202',
+  ].join('; ');
+  compose([
+    'exec',
+    '-T',
+    'ai-service',
+    'python',
+    '-c',
+    python,
+    runId,
+    merchantAttemptId,
+    eventId,
   ]);
 }
 

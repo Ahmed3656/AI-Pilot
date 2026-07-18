@@ -257,10 +257,11 @@ class OpenRouterComputerAgent:
                 ],
             }
         ]
+        merchant_domain = getattr(getattr(executor, "browser", None), "expected_domain", None)
         while True:
             response = await self.client.responses.create(
                 model=self.model,
-                instructions=workflow_instructions(category),
+                instructions=workflow_instructions(category, merchant_domain),
                 # OpenRouter's Responses endpoint is stateless, so tool history must be
                 # resent. Old screenshots are not state, though, and grow the visual
                 # prompt dramatically. Preserve the query/tool chain while keeping only
@@ -313,6 +314,7 @@ class OpenRouterComputerAgent:
                         ],
                     }
                 )
+
     async def _handle_computer_call(
         self, call: Any, executor: BrowserActionExecutor
     ) -> tuple[dict[str, Any], str]:

@@ -102,6 +102,15 @@ export type PendingAction =
       merchantDomain: string;
       holdDurationSeconds: number | null;
     }
+  | {
+      type: 'browser_takeover';
+      requestId: string;
+      merchantAttemptId: string;
+      merchantName: string;
+      merchantDomain: string;
+      reasonCode: string;
+      message: string;
+    }
   | { type: 'handoff'; requestId: string };
 
 export interface MerchantCatalogEntry {

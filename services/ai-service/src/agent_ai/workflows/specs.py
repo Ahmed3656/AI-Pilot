@@ -128,8 +128,16 @@ meeting every constraint by complete booking total.
 }
 
 
-def workflow_instructions(category: Category) -> str:
-    return _COMMON + _CATEGORY[category]
+def workflow_instructions(category: Category, merchant_domain: str | None = None) -> str:
+    instructions = _COMMON + _CATEGORY[category]
+    if merchant_domain:
+        instructions += f"""
+This is one parallel merchant worker assigned exclusively to {merchant_domain}. Search and
+process only this merchant in this browser instance. Do not open or process another merchant;
+other approved merchants are running concurrently in isolated browser instances. Return only
+discoveries from {merchant_domain}.
+"""
+    return instructions
 
 
 def _extract_json(text: str) -> dict[str, Any]:

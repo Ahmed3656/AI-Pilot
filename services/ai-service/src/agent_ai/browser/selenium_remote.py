@@ -307,6 +307,14 @@ class SeleniumRemoteBrowser:
             self.expected_domain = None
             self._test_fixture_domain = None
 
+    def focus_for_takeover(self) -> None:
+        """Bring this WebDriver window forward before granting human input."""
+        if self.driver is None:
+            raise SafetyViolation("Merchant browser is not connected")
+        handle = self.driver.current_window_handle
+        self.driver.switch_to.window(handle)
+        self.driver.execute_script("window.focus()")
+
     def load_deterministic_test_fixture(
         self,
         domain: str,

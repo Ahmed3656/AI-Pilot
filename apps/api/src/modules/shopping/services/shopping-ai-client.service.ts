@@ -16,7 +16,7 @@ export class AiBrowserBusyError extends Error {
     readonly activeRunId: string | null,
     readonly retryAfterSeconds: number,
   ) {
-    super('The shopping browser is busy with an active run');
+    super('The merchant browser pool is busy with an active run');
     this.name = 'AiBrowserBusyError';
   }
 }

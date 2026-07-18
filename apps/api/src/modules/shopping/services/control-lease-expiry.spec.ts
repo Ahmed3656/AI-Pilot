@@ -18,7 +18,7 @@ import { ViewerTokenService } from './viewer-token.service';
 describe('control lease expiry recovery', () => {
   afterEach(() => jest.useRealTimers());
 
-  it('denies expired control and resumes AI with one stable recovery command', async () => {
+  it('denies expired requested input and resumes AI with one stable recovery command', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-07-17T10:00:00.000Z'));
     const store = new InMemoryShoppingStore();
     const config = new ConfigService({
@@ -50,9 +50,17 @@ describe('control lease expiry recovery', () => {
       timezone: 'Africa/Cairo',
       locale: SupportedLocale.EnglishEgypt,
       query: 'Find a phone',
-      status: ShoppingRunState.ReadyForHandoff,
-      resumeStatus: null,
-      pendingAction: { type: 'handoff', requestId: 'handoff-1' },
+      status: ShoppingRunState.Paused,
+      resumeStatus: ShoppingRunState.Comparing,
+      pendingAction: {
+        type: 'browser_takeover',
+        requestId: 'warning-1',
+        merchantAttemptId: 'attempt-1',
+        merchantName: 'Amazon Egypt',
+        merchantDomain: 'amazon.eg',
+        reasonCode: 'captcha_detected',
+        message: 'CAPTCHA verification is required.',
+      },
       failure: null,
       completedAt: null,
       browserExpiresAt: new Date('2026-07-17T11:00:00.000Z'),
@@ -60,12 +68,14 @@ describe('control lease expiry recovery', () => {
     });
 
     const claimed = await service.claimControl('user-1', run.id, {
+      requestId: 'warning-1',
+      merchantAttemptId: 'attempt-1',
       requestedLeaseSeconds: 60,
     });
     await jest.advanceTimersByTimeAsync(60_001);
 
     expect((await store.findRun(run.id))?.status).toBe(
-      ShoppingRunState.ReadyForHandoff,
+      ShoppingRunState.Comparing,
     );
     expect((await store.findLease(claimed.lease.id))?.status).toBe(
       ControlLeaseStatus.Expired,
@@ -121,14 +131,25 @@ describe('control lease expiry recovery', () => {
       query: 'Find dinner',
       status: ShoppingRunState.Paused,
       resumeStatus: ShoppingRunState.Comparing,
-      pendingAction: null,
+      pendingAction: {
+        type: 'browser_takeover',
+        requestId: 'warning-2',
+        merchantAttemptId: 'attempt-2',
+        merchantName: 'Talabat Egypt',
+        merchantDomain: 'talabat.com',
+        reasonCode: 'login_required',
+        message: 'Login must be completed by the user.',
+      },
       failure: null,
       completedAt: null,
       browserExpiresAt: new Date('2026-07-17T11:00:00.000Z'),
       lastEventId: null,
     });
 
-    const claimed = await service.claimControl('user-1', run.id, {});
+    const claimed = await service.claimControl('user-1', run.id, {
+      requestId: 'warning-2',
+      merchantAttemptId: 'attempt-2',
+    });
     expect(claimed.run.status).toBe(ShoppingRunState.UserTakeover);
     const released = await service.releaseControl('user-1', run.id, {
       leaseId: claimed.lease.id,
@@ -140,7 +161,11 @@ describe('control lease expiry recovery', () => {
       1,
       expect.objectContaining({ id: run.id }),
       'pause',
-      { reason: 'control_claim' },
+      {
+        reason: 'control_claim',
+        merchantAttemptId: 'attempt-2',
+        merchantDomain: 'talabat.com',
+      },
     );
     expect(command).toHaveBeenNthCalledWith(
       2,

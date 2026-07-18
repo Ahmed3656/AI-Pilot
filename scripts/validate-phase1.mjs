@@ -52,6 +52,8 @@ assert.doesNotMatch(compose, /^\s+(?:COUNTRY|MARKET|CURRENCY|TIMEZONE):/m);
 assert.match(compose, /selenium\/standalone-chromium:4\.45\.0-20260606/);
 assert.match(compose, /SE_SCREEN_WIDTH: ['"]1280['"]/);
 assert.match(compose, /SE_SCREEN_HEIGHT: ['"]800['"]/);
+assert.match(compose, /SE_NODE_MAX_SESSIONS: \$\{SE_NODE_MAX_SESSIONS:-3\}/);
+assert.match(compose, /SE_NODE_OVERRIDE_MAX_SESSIONS: ['"]true['"]/);
 assert.match(compose, /availability['"]\) == ['"]UP['"]/);
 assert.doesNotMatch(compose, /\['value'\]\['ready'\] is True/);
 assert.match(
@@ -76,6 +78,7 @@ for (const required of [
   'AI_CONTROL_API_URL',
   'CADDY_API_UPSTREAM',
   'CADDY_VIEWER_UPSTREAM',
+  'SE_NODE_MAX_SESSIONS',
   'SE_NODE_SESSION_TIMEOUT',
 ]) {
   assert.match(

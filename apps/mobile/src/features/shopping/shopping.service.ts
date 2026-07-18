@@ -27,11 +27,11 @@ const RUNS_PATH = '/shopping/runs';
 interface ContractErrorResponse {
   error?: {
     code?: string;
-    details?: Array<{
+    details?: {
       field?: string | null;
       code?: string;
       message?: string;
-    }>;
+    }[];
   };
 }
 
@@ -327,6 +327,8 @@ export async function replaceActiveShoppingRun(
 
 export async function claimControl(
   runId: string,
+  requestId: string,
+  merchantAttemptId: string,
   requestedLeaseSeconds?: number,
 ): Promise<{ run: RunResource; lease: ControlLease }> {
   const { data } = await apiClient.post<{
@@ -334,7 +336,11 @@ export async function claimControl(
     lease: ControlLease;
   }>(
     `${RUNS_PATH}/${encodeURIComponent(runId)}/control/claim`,
-    requestedLeaseSeconds ? { requestedLeaseSeconds } : {},
+    {
+      requestId,
+      merchantAttemptId,
+      ...(requestedLeaseSeconds ? { requestedLeaseSeconds } : {}),
+    },
     { headers: mutationHeaders() },
   );
   return { run: unwrapRun(data), lease: data.lease };

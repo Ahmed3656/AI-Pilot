@@ -59,7 +59,7 @@ The root command starts Expo only. It does not start a second API or AI process.
 
 For Expo Web, press `w`. For an Android emulator, run `adb reverse tcp:8080 tcp:8080` before starting Expo; iOS Simulator can use host loopback directly. For a physical phone, either use the HTTPS tunnel profile below or, on a trusted private LAN, set `DEALPILOT_GATEWAY_BIND=0.0.0.0` and set `DEALPILOT_PUBLIC_ORIGIN` plus `EXPO_PUBLIC_API_URL` to `http://<computer-lan-ip>:8080`. Apply the same Expo URL in `apps/mobile/.env`, restart Docker, and restart Expo with a cleared cache.
 
-Sign in with the credentials printed by `npm run demo`. The seeded report run ID is also written to ignored `infra/phase1/.demo-state.json`. The completed seed leaves the single browser slot free, so the mobile app can create a fresh run and exercise approval, comparison, WebSocket updates, handoff, and report screens.
+Sign in with the credentials printed by `npm run demo`. The seeded report run ID is also written to ignored `infra/phase1/.demo-state.json`. The completed seed leaves all browser slots free, so the mobile app can create a fresh run and exercise approval, parallel comparison, WebSocket updates, handoff, and report screens.
 
 ## Demonstration sequence
 
@@ -68,11 +68,11 @@ Sign in with the credentials printed by `npm run demo`. The seeded report run ID
 3. Approve only the desired Egypt merchant subset. Do not approve lookalike or unrelated domains.
 4. Watch the timeline update over the WebSocket. Background/foreground the client once to demonstrate cursor replay and deduplication.
 5. Open the report. Point out any incomplete offer and partial merchant failure rather than hiding it.
-6. Claim control. Confirm the noVNC view becomes interactive only after the API lease is active.
-7. Release control. Confirm the run returns to `ready_for_handoff` and the same browser session resumes.
+6. Confirm completed merchant sessions remain view-only. If a merchant raises a CAPTCHA, login, OTP, or browser-warning fallback, confirm the UI names that merchant and only then offers control.
+7. Claim the requested merchant and confirm its noVNC browser is focused and becomes interactive only after the API lease is active. Release control and confirm the interrupted AI state resumes with all merchant sessions retained.
 8. Complete or cancel the run. Never submit a purchase, booking, order, payment, login, or OTP as part of the demo.
 
-The automated seed already asserts the same-browser session ID before claim and after release, command-failure rollback, partial/incomplete report retention, live WebSocket plus reconnect history, canonical routing, and absence of known secrets/private fields in recent service logs.
+The automated seed already asserts that all per-merchant session IDs remain stable before claim and after release, command-failure rollback, incomplete report retention, live WebSocket plus reconnect history, canonical routing, and absence of known secrets/private fields in recent service logs.
 
 ## Start real OpenRouter/merchant mode
 

@@ -45,6 +45,13 @@ import {
   ViewerMode,
 } from './shopping.types';
 
+const USER_INPUT_WARNING_CODES = new Set([
+  'login_required',
+  'one_time_code_required',
+  'captcha_detected',
+  'browser_warning',
+]);
+
 @Injectable()
 export class ShoppingService implements OnModuleDestroy {
   private readonly browserTtlSeconds: number;
@@ -492,12 +499,9 @@ export class ShoppingService implements OnModuleDestroy {
 
   async claimControl(userId: string, id: string, dto: ClaimControlDto) {
     const run = await this.getOwnedRun(userId, id);
-    if (
-      ![ShoppingRunState.ReadyForHandoff, ShoppingRunState.Paused].includes(
-        run.status,
-      )
-    )
-      this.invalidTransition();
+    this.requireState(run, ShoppingRunState.Paused);
+    const pending = this.requirePending(run, 'browser_takeover', dto.requestId);
+    if (pending.merchantAttemptId !== dto.merchantAttemptId) this.stale();
     if (await this.store.findActiveLease(run.id))
       throw new ContractException(
         'CONTROL_LEASE_CONFLICT',
@@ -520,7 +524,11 @@ export class ShoppingService implements OnModuleDestroy {
         ),
       ),
     });
-    await this.ai.command(run, 'pause', { reason: 'control_claim' });
+    await this.ai.command(run, 'pause', {
+      reason: 'control_claim',
+      merchantAttemptId: pending.merchantAttemptId,
+      merchantDomain: pending.merchantDomain,
+    });
     this.changeStatus(run, ShoppingRunState.UserTakeover);
     await this.store.saveRunAndLease(run, lease);
     this.scheduleLeaseRecovery(run.id, lease);
@@ -528,6 +536,7 @@ export class ShoppingService implements OnModuleDestroy {
       leaseId: lease.id,
       holderUserId: userId,
       expiresAt: lease.expiresAt.toISOString(),
+      merchantAttemptId: pending.merchantAttemptId,
     });
     return { run: this.runView(run), lease: this.leaseView(lease) };
   }
@@ -571,6 +580,7 @@ export class ShoppingService implements OnModuleDestroy {
     const resumeStatus = run.resumeStatus ?? ShoppingRunState.ReadyForHandoff;
     this.changeStatus(run, resumeStatus);
     run.resumeStatus = null;
+    run.pendingAction = null;
     await this.store.saveRunAndLease(run, lease);
     this.clearLeaseTimer(run.id);
     const releasedAt = new Date().toISOString();
@@ -839,6 +849,21 @@ export class ShoppingService implements OnModuleDestroy {
       )
         this.missingEventReference('Merchant attempt');
     }
+    if (dto.type === 'run.warning' && dto.payload.requiresUserInput === true) {
+      const merchantAttemptId = dto.payload.merchantAttemptId;
+      if (
+        dto.status !== ShoppingRunState.Paused ||
+        !isString(merchantAttemptId)
+      )
+        invalidEvent(dto.type);
+      const data = await this.store.report(run.id);
+      if (
+        !data.merchantAttempts.some(
+          (attempt) => attempt.id === merchantAttemptId,
+        )
+      )
+        this.missingEventReference('Merchant attempt');
+    }
     if (dto.type === 'offer.recorded') {
       const data = await this.store.report(run.id);
       if (
@@ -926,6 +951,24 @@ export class ShoppingService implements OnModuleDestroy {
           holdDurationSeconds: dto.payload.holdDurationSeconds as number | null,
         };
         break;
+      case 'run.warning': {
+        if (dto.payload.requiresUserInput !== true) break;
+        const data = await this.store.report(run.id);
+        const attempt = data.merchantAttempts.find(
+          (candidate) => candidate.id === dto.payload.merchantAttemptId,
+        );
+        if (!attempt) break;
+        run.pendingAction = {
+          type: 'browser_takeover',
+          requestId: dto.id,
+          merchantAttemptId: attempt.id,
+          merchantName: attempt.merchantName,
+          merchantDomain: attempt.merchantDomain,
+          reasonCode: String(dto.payload.code),
+          message: String(dto.payload.message),
+        };
+        break;
+      }
       case 'merchant.attempt_started': {
         const merchant = EGYPT_MERCHANTS.find(
           (candidate) => candidate.id === dto.payload.merchantId,
@@ -1362,6 +1405,7 @@ export class ShoppingService implements OnModuleDestroy {
     const resumeStatus = run.resumeStatus ?? ShoppingRunState.ReadyForHandoff;
     this.changeStatus(run, resumeStatus);
     run.resumeStatus = null;
+    run.pendingAction = null;
     await this.store.saveRunAndLease(run, lease);
     await this.recordEvent(run, 'control.lease_expired', {
       leaseId,
@@ -1496,8 +1540,11 @@ const EVENT_KEYS: Record<
   },
   'run.warning': {
     required: ['code', 'message', 'merchantAttemptId', 'evidenceIds'],
+    optional: ['requiresUserInput'],
   },
-  'control.claimed': { required: ['leaseId', 'holderUserId', 'expiresAt'] },
+  'control.claimed': {
+    required: ['leaseId', 'holderUserId', 'expiresAt', 'merchantAttemptId'],
+  },
   'control.renewed': { required: ['leaseId', 'expiresAt'] },
   'control.released': { required: ['leaseId', 'releasedAt', 'recovery'] },
   'control.lease_expired': { required: ['leaseId', 'expiredAt', 'recovery'] },
@@ -1541,11 +1588,11 @@ function assertEventPayload(
   type: EventType,
   payload: Record<string, unknown>,
 ): void {
-  const allowed = EVENT_KEYS[type].required;
+  const required = EVENT_KEYS[type].required;
+  const allowed = [...required, ...(EVENT_KEYS[type].optional ?? [])];
   const keys = Object.keys(payload);
   if (
-    keys.length !== allowed.length ||
-    allowed.some((key) => !(key in payload)) ||
+    required.some((key) => !(key in payload)) ||
     keys.some((key) => !allowed.includes(key))
   ) {
     invalidEvent(type);
@@ -1673,7 +1720,12 @@ function assertEventPayload(
         !isString(payload.code) ||
         !isString(payload.message) ||
         !nullableString(payload.merchantAttemptId) ||
-        !isStringArray(payload.evidenceIds)
+        !isStringArray(payload.evidenceIds) ||
+        (payload.requiresUserInput !== undefined &&
+          typeof payload.requiresUserInput !== 'boolean') ||
+        (payload.requiresUserInput === true &&
+          (!isString(payload.merchantAttemptId) ||
+            !USER_INPUT_WARNING_CODES.has(String(payload.code))))
       )
         invalidEvent(type);
       break;

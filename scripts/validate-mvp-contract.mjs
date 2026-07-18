@@ -127,15 +127,9 @@ assert.deepEqual(schemas.RunStatus['x-allowed-transitions'], {
     'cancelled',
     'failed',
   ],
-  ready_for_handoff: [
-    'user_takeover',
-    'paused',
-    'completed',
-    'cancelled',
-    'failed',
-  ],
-  user_takeover: ['ready_for_handoff', 'completed', 'cancelled', 'failed'],
-  paused: ['$resumeStatus', 'cancelled', 'failed'],
+  ready_for_handoff: ['paused', 'completed', 'cancelled', 'failed'],
+  user_takeover: ['$resumeStatus', 'completed', 'cancelled', 'failed'],
+  paused: ['user_takeover', '$resumeStatus', 'cancelled', 'failed'],
   completed: [],
   cancelled: [],
   failed: [],
@@ -221,6 +215,15 @@ assert.equal(schemas.DecimalEGP.type, 'string');
 assert.equal(schemas.RunResource.properties.market.const, 'EG');
 assert.equal(schemas.RunResource.properties.currency.const, 'EGP');
 assert.equal(schemas.RunResource.properties.timezone.const, 'Africa/Cairo');
+assert.deepEqual(schemas.ClaimControlRequest.required, [
+  'requestId',
+  'merchantAttemptId',
+]);
+assert.ok(
+  schemas.PendingAction.oneOf.some(
+    (action) => action.properties.type.const === 'browser_takeover',
+  ),
+);
 
 assert.ok(
   contract.paths['/api/v1/shopping/runs/{runId}/events'].get['x-websocket'],

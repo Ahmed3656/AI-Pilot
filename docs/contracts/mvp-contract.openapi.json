@@ -759,19 +759,13 @@
             "failed"
           ],
           "ready_for_handoff": [
-            "user_takeover",
             "paused",
             "completed",
             "cancelled",
             "failed"
           ],
-          "user_takeover": [
-            "ready_for_handoff",
-            "completed",
-            "cancelled",
-            "failed"
-          ],
-          "paused": ["$resumeStatus", "cancelled", "failed"],
+          "user_takeover": ["$resumeStatus", "completed", "cancelled", "failed"],
+          "paused": ["user_takeover", "$resumeStatus", "cancelled", "failed"],
           "completed": [],
           "cancelled": [],
           "failed": []
@@ -967,6 +961,28 @@
           {
             "type": "object",
             "additionalProperties": false,
+            "required": [
+              "type",
+              "requestId",
+              "merchantAttemptId",
+              "merchantName",
+              "merchantDomain",
+              "reasonCode",
+              "message"
+            ],
+            "properties": {
+              "type": { "const": "browser_takeover" },
+              "requestId": { "type": "string" },
+              "merchantAttemptId": { "type": "string" },
+              "merchantName": { "type": "string" },
+              "merchantDomain": { "type": "string" },
+              "reasonCode": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
             "required": ["type", "requestId"],
             "properties": {
               "type": { "const": "handoff" },
@@ -1145,7 +1161,14 @@
       "ClaimControlRequest": {
         "type": "object",
         "additionalProperties": false,
+        "required": ["requestId", "merchantAttemptId"],
         "properties": {
+          "requestId": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "merchantAttemptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
           "requestedLeaseSeconds": {
             "type": "integer",
             "minimum": 60,

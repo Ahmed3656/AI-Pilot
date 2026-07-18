@@ -223,7 +223,9 @@ export function ShoppingRunScreen() {
             />
           </View>
 
-          {pendingAction && pendingAction.type !== 'handoff' ? (
+          {pendingAction &&
+          pendingAction.type !== 'handoff' &&
+          pendingAction.type !== 'browser_takeover' ? (
             <View style={styles.section}>
               <SectionHeading title={t('approvals')} />
               <ApprovalCard
@@ -294,6 +296,11 @@ export function ShoppingRunScreen() {
             onRunChanged={applyRun}
             runId={snapshot.id}
             status={snapshot.status}
+            takeoverAction={
+              pendingAction?.type === 'browser_takeover'
+                ? pendingAction
+                : undefined
+            }
           />
 
           {snapshot.failure ? (

@@ -28,6 +28,12 @@ describe('RunStateMachine', () => {
     ).not.toThrow();
   });
 
+  it('keeps ready-for-handoff runs view-only', () => {
+    expect(() =>
+      machine.assertTransition(S.ReadyForHandoff, S.UserTakeover),
+    ).toThrow('Invalid run transition');
+  });
+
   it('returns manual takeover to the stored pre-pause status', () => {
     expect(() =>
       machine.assertTransition(S.UserTakeover, S.Comparing, S.Comparing),

@@ -273,7 +273,7 @@ describe('canonical shopping service', () => {
         data: { run, lease: { ...lease, status: 'released' } },
       });
 
-    await claimControl(run.id);
+    await claimControl(run.id, 'warning-1', 'attempt-1');
     await createViewerToken(run.id, 'control', lease.id);
     await releaseControl(run.id, lease.id);
 
@@ -282,6 +282,10 @@ describe('canonical shopping service', () => {
       '/shopping/runs/run-01/viewer-tokens',
       '/shopping/runs/run-01/control/release',
     ]);
+    expect(post.mock.calls[0][1]).toEqual({
+      requestId: 'warning-1',
+      merchantAttemptId: 'attempt-1',
+    });
     expect(post.mock.calls[1][1]).toEqual({
       mode: 'control',
       leaseId: 'lease-1',

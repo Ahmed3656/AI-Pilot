@@ -7,7 +7,10 @@ import { PendingAction } from '../types';
 import { ChoiceChip, LabelledInput } from './ShoppingControls';
 
 interface ApprovalCardProps {
-  action: Exclude<PendingAction, { type: 'handoff' }>;
+  action: Exclude<
+    PendingAction,
+    { type: 'handoff' } | { type: 'browser_takeover' }
+  >;
   busy: boolean;
   onClarification: (answers: Record<string, string>) => void;
   onDomains: (domains: string[]) => void;

@@ -165,8 +165,10 @@ services:
     restart: unless-stopped
     shm_size: 2gb
     environment:
-      SE_NODE_MAX_SESSIONS: ${SE_NODE_MAX_SESSIONS:-1}
-      SE_NODE_OVERRIDE_MAX_SESSIONS: 'false'
+      # Retail has three selectable merchants; each approved merchant gets an
+      # isolated WebDriver session so their agents can run concurrently.
+      SE_NODE_MAX_SESSIONS: ${SE_NODE_MAX_SESSIONS:-3}
+      SE_NODE_OVERRIDE_MAX_SESSIONS: 'true'
       SE_NODE_SESSION_TIMEOUT: ${SE_NODE_SESSION_TIMEOUT:-3600}
       SE_SESSION_REQUEST_TIMEOUT: ${SE_SESSION_REQUEST_TIMEOUT:-30}
       SE_SCREEN_WIDTH: '1280'
@@ -189,9 +191,9 @@ services:
       - control-plane
       - agent-egress
     healthcheck:
-      # Selenium's own `ready` flag becomes false while its single slot is in
-      # use. The service is still healthy (and its VNC stream is live), so the
-      # container check must test the status endpoint rather than slot capacity.
+      # Selenium's own `ready` flag becomes false when all slots are occupied.
+      # The service is still healthy (and its VNC stream is live), so the check
+      # must test the status endpoint rather than current slot capacity.
       test: ['CMD-SHELL', 'wget -q --spider http://127.0.0.1:4444/status']
       interval: 10s
       timeout: 10s

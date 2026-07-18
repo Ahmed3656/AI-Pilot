@@ -495,7 +495,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
     expect((await store.report(rejected.run.id)).approvals).toHaveLength(0);
   });
 
-  it('preserves the resume target for worker safety pauses and permits takeover', async () => {
+  it('permits takeover only for the merchant named by a user-input warning', async () => {
     const created = await createRun('retail', 'Find a monitor', 'en-EG');
     const runId = created.run.id as string;
     await requireDomains(runId, 'pause-domain', ['amazon.eg']);
@@ -505,11 +505,38 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .send({ requestId: 'pause-domain', domains: ['amazon.eg'] })
       .expect(200);
 
+    await postEvent(runId, 'comparing', 'merchant.attempt_started', {
+      attemptId: 'pause-attempt',
+      merchantId: 'amazon-eg',
+      merchantDomain: 'amazon.eg',
+      category: 'retail',
+    });
+
     await postEvent(runId, 'paused', 'run.status_changed', {
       from: 'comparing',
       to: 'paused',
       reasonCode: 'captcha_detected',
     });
+
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('pause-without-request'))
+      .send({ requestId: 'missing', merchantAttemptId: 'pause-attempt' })
+      .expect(404);
+
+    await postEvent(
+      runId,
+      'paused',
+      'run.warning',
+      {
+        code: 'captcha_detected',
+        message: 'CAPTCHA/human verification detected',
+        merchantAttemptId: 'pause-attempt',
+        evidenceIds: [],
+        requiresUserInput: true,
+      },
+      'pause-warning',
+    );
 
     const paused = await api()
       .get(`/api/v1/shopping/runs/${runId}`)
@@ -517,12 +544,31 @@ describe('DealPilot canonical API contract (e2e)', () => {
     expect(paused.body.run).toMatchObject({
       status: 'paused',
       resumeStatus: 'comparing',
+      pendingAction: {
+        type: 'browser_takeover',
+        requestId: 'pause-warning',
+        merchantAttemptId: 'pause-attempt',
+        merchantName: 'Amazon Egypt',
+        merchantDomain: 'amazon.eg',
+      },
     });
+
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('wrong-pause-attempt'))
+      .send({
+        requestId: 'pause-warning',
+        merchantAttemptId: 'another-attempt',
+      })
+      .expect(409);
 
     const claimed = await api()
       .post(`/api/v1/shopping/runs/${runId}/control/claim`)
       .set('Idempotency-Key', idem('pause-takeover'))
-      .send({})
+      .send({
+        requestId: 'pause-warning',
+        merchantAttemptId: 'pause-attempt',
+      })
       .expect(200);
     expect(claimed.body.run).toMatchObject({
       status: 'user_takeover',
@@ -626,7 +672,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
     );
   });
 
-  it('claims, tokenizes, authorizes, and releases exclusive control in the same run session', async () => {
+  it('claims the requested merchant, authorizes control, and resumes AI work', async () => {
     const created = await createRun('retail', 'Find a phone', 'en-EG');
     const runId = created.run.id as string;
     await requireDomains(runId, 'control-domain', ['amazon.eg']);
@@ -635,11 +681,30 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('Idempotency-Key', idem('control-domain'))
       .send({ requestId: 'control-domain', domains: ['amazon.eg'] })
       .expect(200);
-    await postEvent(runId, 'ready_for_handoff', 'run.status_changed', {
-      from: 'comparing',
-      to: 'ready_for_handoff',
-      reasonCode: null,
+    await postEvent(runId, 'comparing', 'merchant.attempt_started', {
+      attemptId: 'control-attempt',
+      merchantId: 'amazon-eg',
+      merchantDomain: 'amazon.eg',
+      category: 'retail',
     });
+    await postEvent(runId, 'paused', 'run.status_changed', {
+      from: 'comparing',
+      to: 'paused',
+      reasonCode: 'login_required',
+    });
+    await postEvent(
+      runId,
+      'paused',
+      'run.warning',
+      {
+        code: 'login_required',
+        message: 'Login must be completed by the user',
+        merchantAttemptId: 'control-attempt',
+        evidenceIds: [],
+        requiresUserInput: true,
+      },
+      'control-warning',
+    );
     const view = await api()
       .post(`/api/v1/shopping/runs/${runId}/viewer-tokens`)
       .set('Idempotency-Key', idem('view-token'))
@@ -658,18 +723,29 @@ describe('DealPilot canonical API contract (e2e)', () => {
     const claimed = await api()
       .post(`/api/v1/shopping/runs/${runId}/control/claim`)
       .set('Idempotency-Key', idem('control-claim'))
-      .send({ requestedLeaseSeconds: 120 })
+      .send({
+        requestId: 'control-warning',
+        merchantAttemptId: 'control-attempt',
+        requestedLeaseSeconds: 120,
+      })
       .expect(200);
     expect(claimed.body.run.status).toBe('user_takeover');
     expect(claimed.body.lease.status).toBe('active');
     expect(aiRequests.at(-1)?.body).toMatchObject({
       name: 'pause',
-      payload: { reason: 'control_claim' },
+      payload: {
+        reason: 'control_claim',
+        merchantAttemptId: 'control-attempt',
+        merchantDomain: 'amazon.eg',
+      },
     });
     await api()
       .post(`/api/v1/shopping/runs/${runId}/control/claim`)
       .set('Idempotency-Key', idem('second-claim'))
-      .send({})
+      .send({
+        requestId: 'control-warning',
+        merchantAttemptId: 'control-attempt',
+      })
       .expect(409);
 
     const control = await api()
@@ -713,7 +789,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .send({ leaseId: claimed.body.lease.id })
       .expect(200);
     expect(released.body).toMatchObject({
-      run: { status: 'ready_for_handoff' },
+      run: { status: 'comparing', pendingAction: null },
       lease: { status: 'released' },
     });
     expect(aiRequests.at(-1)?.body).toMatchObject({
@@ -725,6 +801,32 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('X-Internal-Token', INTERNAL_TOKEN)
       .set('Authorization', `Bearer ${control.body.token}`)
       .expect(401);
+  });
+
+  it('keeps ready-for-handoff browser sessions view-only', async () => {
+    const created = await createRun(
+      'retail',
+      'Find a view-only phone',
+      'en-EG',
+    );
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'view-only-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('view-only-domain'))
+      .send({ requestId: 'view-only-domain', domains: ['amazon.eg'] })
+      .expect(200);
+    await postEvent(runId, 'ready_for_handoff', 'run.status_changed', {
+      from: 'comparing',
+      to: 'ready_for_handoff',
+      reasonCode: null,
+    });
+
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('view-only-claim'))
+      .send({ requestId: 'not-requested', merchantAttemptId: 'not-requested' })
+      .expect(409);
   });
 
   it('resumes an AI-originated safety pause from its previous run state', async () => {
@@ -1006,8 +1108,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
     status: string,
     type: string,
     payload: Record<string, unknown>,
+    eventId?: string,
   ) {
-    const id = `ai-${type}-${Math.random().toString(36).slice(2)}`;
+    const id = eventId ?? `ai-${type}-${Math.random().toString(36).slice(2)}`;
     return request(app.getHttpServer())
       .post('/internal/v1/ai-events')
       .set('X-Internal-Token', INTERNAL_TOKEN)

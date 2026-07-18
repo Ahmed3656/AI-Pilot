@@ -65,12 +65,12 @@ Allowed transitions are exact:
 | `awaiting_address_consent`    | `comparing`, `paused`, `cancelled`, `failed`                                                                                                                  |
 | `awaiting_seat_hold_approval` | `comparing`, `paused`, `cancelled`, `failed`                                                                                                                  |
 | `coupon_testing`              | `comparing`, `ready_for_handoff`, `paused`, `cancelled`, `failed`                                                                                             |
-| `ready_for_handoff`           | `user_takeover`, `paused`, `completed`, `cancelled`, `failed`                                                                                                 |
-| `user_takeover`               | `ready_for_handoff`, `completed`, `cancelled`, `failed`                                                                                                       |
-| `paused`                      | the stored `resumeStatus`, `cancelled`, `failed`                                                                                                              |
+| `ready_for_handoff`           | `paused`, `completed`, `cancelled`, `failed`                                                                                                                  |
+| `user_takeover`               | the stored `resumeStatus`, `completed`, `cancelled`, `failed`                                                                                                 |
+| `paused`                      | `user_takeover` only for a current AI user-input request; otherwise the stored `resumeStatus`, `cancelled`, `failed`                                          |
 | terminal status               | none                                                                                                                                                          |
 
-Entering `paused` stores the immediately preceding nonterminal status as `resumeStatus`. `resume` may return only to that stored status; callers cannot choose a target. A same-status event is idempotent and does not create another state transition. Every other unlisted transition returns `409 INVALID_RUN_TRANSITION`.
+Entering `paused` stores the immediately preceding nonterminal status as `resumeStatus`. `resume` and takeover release may return only to that stored status; callers cannot choose a target. `ready_for_handoff` means the report and retained browsers are ready for review, but those browsers remain view-only unless a later AI user-input blocker creates a targeted takeover request. A same-status event is idempotent and does not create another state transition. Every other unlisted transition returns `409 INVALID_RUN_TRANSITION`.
 
 The API owns the state machine. AI events propose facts and statuses, but the API validates and persists every transition.
 
@@ -129,6 +129,15 @@ type PendingAction =
       merchantDomain: string;
       holdDurationSeconds: number | null;
     }
+  | {
+      type: 'browser_takeover';
+      requestId: string;
+      merchantAttemptId: string;
+      merchantName: string;
+      merchantDomain: string;
+      reasonCode: string;
+      message: string;
+    }
   | { type: 'handoff'; requestId: string };
 
 interface Merchant {
@@ -184,7 +193,7 @@ Every mutating request requires an `Idempotency-Key` header containing 8-128 pri
 | `POST /shopping/runs/:runId/address-grant`       | `200`   | `AddressGrantRequest`        | `ApprovalResponse`                          | `awaiting_address_consent`                      |
 | `POST /shopping/runs/:runId/seat-hold/approve`   | `200`   | `SeatHoldApprovalRequest`    | `ApprovalResponse`                          | `awaiting_seat_hold_approval`                   |
 | `POST /shopping/runs/:runId/control`             | `200`   | `RunControlRequest`          | `{ run: RunResource }`                      | action-specific                                 |
-| `POST /shopping/runs/:runId/control/claim`       | `200`   | `ClaimControlRequest`        | `{ run: RunResource; lease: ControlLease }` | `ready_for_handoff`                             |
+| `POST /shopping/runs/:runId/control/claim`       | `200`   | `ClaimControlRequest`        | `{ run: RunResource; lease: ControlLease }` | `paused` with matching `browser_takeover`       |
 | `POST /shopping/runs/:runId/control/renew`       | `200`   | `{ leaseId: string }`        | `{ lease: ControlLease }`                   | active lease held by caller                     |
 | `POST /shopping/runs/:runId/control/release`     | `200`   | `{ leaseId: string }`        | `{ run: RunResource; lease: ControlLease }` | active/recovering lease held by caller          |
 | `POST /shopping/runs/:runId/viewer-tokens`       | `201`   | `CreateViewerTokenRequest`   | `ViewerTokenResponse`                       | nonterminal; control also requires active lease |
@@ -250,6 +259,8 @@ interface RunControlRequest {
 }
 
 interface ClaimControlRequest {
+  requestId: string;
+  merchantAttemptId: string;
   requestedLeaseSeconds?: number; // integer 60..900; default 120
 }
 
@@ -437,11 +448,13 @@ interface EventPayloadMap {
     message: string;
     merchantAttemptId: string | null;
     evidenceIds: string[];
+    requiresUserInput?: boolean;
   };
   'control.claimed': {
     leaseId: string;
     holderUserId: string;
     expiresAt: Timestamp;
+    merchantAttemptId: string;
   };
   'control.renewed': { leaseId: string; expiresAt: Timestamp };
   'control.released': {
@@ -561,7 +574,7 @@ There are no `pause_ai`, `resume_ai`, `approve`, `deny`, or command `type` alias
 | Command             | Payload                                                                                                               |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `clarify`           | `{ requestId: string; answers: Record<string, string \| string[]> }`                                                  |
-| `pause`             | `{ reason: "user" \| "control_claim" \| "safety" }`                                                                   |
+| `pause`             | `{ reason: "user" \| "safety" }` or `{ reason:"control_claim"; merchantAttemptId:string; merchantDomain:string }`     |
 | `resume`            | `{ reason: "user" \| "control_release" \| "lease_expired" }`                                                          |
 | `cancel`            | `{ reason: string \| null }`                                                                                          |
 | `complete`          | `{ reason: "user_finished"; reportId: string }`                                                                       |
@@ -585,22 +598,22 @@ Secret resolution accepts `{ runId, secretReference, merchantDomain, field }` an
 
 ## 8. Browser and control lifecycle
 
-There is exactly one isolated Selenium browser session per run and at most one active run browser in the MVP.
+There is exactly one isolated Selenium browser session per approved merchant and at most one active run browser pool in the MVP. A retail run therefore uses one to three concurrent sessions, based on the user's selection.
 
-1. The AI service creates the browser session once, initially at `about:blank`, after accepting internal run creation. It never creates a replacement session for retry, pause, clarification, or takeover.
+1. The AI service waits for domain approval, then creates one browser session and one agent worker for each selected merchant. It never creates a replacement session for retry, pause, clarification, or takeover.
 2. Before every top-level navigation, click that may navigate, form submission, popup/tab switch, and redirect continuation, the target/current URL is checked against the effective approved-domain set.
-3. The same WebDriver session and cookies remain alive through `paused`, `ready_for_handoff`, and `user_takeover`. AI task completion or `ready_for_handoff` MUST NOT call `quit()`.
-4. AI control is paused before a human control lease becomes effective. AI and user control can never be active concurrently.
-5. The browser closes only after `complete` or `cancel` is acknowledged, after an AI-originated terminal failure, or when the absolute browser TTL expires. Closing destroys cookies, tabs, in-memory secrets, address grants, viewer authorization, and the Selenium session.
+3. Each merchant's WebDriver session and cookies remain alive through `paused`, `ready_for_handoff`, and `user_takeover`. AI task completion or `ready_for_handoff` MUST NOT call `quit()`.
+4. AI control across all merchant workers is paused before a human control lease becomes effective. The requested merchant browser is focused before the lease is granted. AI and user control can never be active concurrently.
+5. All merchant browsers close only after `complete` or `cancel` is acknowledged, after an AI-originated terminal failure, or when the absolute browser TTL expires. Closing destroys cookies, tabs, in-memory secrets, address grants, viewer authorization, and every Selenium session in the run.
 6. Browser TTL is measured from run creation, defaults to 3600 seconds, and is never extended by control renewal. TTL expiry closes the session and transitions the run to `failed` with `BROWSER_TTL_EXPIRED` unless it is already terminal.
 
 ### 8.1 Control claim, renewal, release, and recovery
 
-- Claim is allowed only from `ready_for_handoff`. The API sends `pause {reason:"control_claim"}`; after acceptance it atomically creates one lease and enters `user_takeover`.
+- Claim is allowed only from `paused` when the current pending action is an AI-originated `browser_takeover` with `requiresUserInput:true`. The request must match both its `requestId` and `merchantAttemptId`; arbitrary paused or `ready_for_handoff` sessions remain view-only. The API sends `pause {reason:"control_claim",merchantAttemptId,merchantDomain}` so the AI service focuses the correct retained browser before the lease becomes active.
 - A lease defaults to 120 seconds, may be requested from 60-900 seconds, and is exclusive. The client renews it every 30 seconds. Renewal never exceeds `browserExpiresAt`.
 - Control viewer authorization requires `user_takeover`, the same owner, matching active `leaseId`, and unexpired JWT and lease. View-only authorization does not grant input.
-- Release sends `resume {reason:"control_release"}`. Only after acceptance does the API revoke control, mark the lease released, and return to `ready_for_handoff`.
-- On lease expiry, input is denied immediately. The lease becomes `recovering`; the API retries the same idempotent `resume {reason:"lease_expired"}` command. After acceptance it marks the lease expired and returns to `ready_for_handoff`.
+- Release sends `resume {reason:"control_release"}`. Only after acceptance does the API revoke control, clear the fulfilled takeover request, mark the lease released, and return to the stored `resumeStatus` so AI work can continue.
+- On lease expiry, input is denied immediately. The lease becomes `recovering`; the API retries the same idempotent `resume {reason:"lease_expired"}` command. After acceptance it clears the takeover request, marks the lease expired, and returns to the stored `resumeStatus`.
 - If resume is rejected or unavailable, the run remains `user_takeover`, the expired lease cannot control, AI remains paused, and `control.lease_expired` reports `recovery:"pending"`. Recovery retries with the same command ID. Browser TTL remains the final cleanup bound.
 
 ## 9. Report contract
@@ -821,58 +834,58 @@ finalTotal = itemSubtotal
 
 Values listed as required in live environments MUST fail readiness when absent. Test mocks may omit live-only secrets, but the UI/demo must identify mock mode and MUST NOT claim a live run worked.
 
-| Variable                     | Owner / consumer                     | Default                                       | Required      | Secret | Contract behavior                                            |
-| ---------------------------- | ------------------------------------ | --------------------------------------------- | ------------- | ------ | ------------------------------------------------------------ |
-| `NODE_ENV`                   | API                                  | `development`                                 | no            | no     | `development`, `test`, `production`                          |
-| `PORT`                       | API                                  | `3000`                                        | no            | no     | API listen port                                              |
-| `DATABASE_ENABLED`           | API                                  | `false` locally; `true` in Compose            | live          | no     | Live MVP requires persistent event/report state              |
-| `DATABASE_URL`               | API                                  | local development URL                         | live          | yes    | PostgreSQL connection string; never logged                   |
-| `JWT_SECRET`                 | API                                  | none outside test                             | live          | yes    | User access-token signing; minimum 32 random bytes           |
-| `JWT_ACCESS_TTL`             | API                                  | `15m`                                         | no            | no     | User access-token lifetime                                   |
-| `JWT_REFRESH_TTL`            | API                                  | `7d`                                          | no            | no     | User refresh-token lifetime                                  |
-| `AI_SERVICE_URL`             | API                                  | `http://ai-service:8000` in Compose           | live          | no     | Private AI origin, no trailing slash                         |
-| `INTERNAL_TOKEN`             | API and Caddy; source for AI mapping | none                                          | live          | yes    | Shared internal authentication, minimum 32 random bytes      |
-| `VIEWER_TOKEN_SECRET`        | API                                  | none                                          | live          | yes    | HS256 viewer JWT key; distinct from `JWT_SECRET`             |
-| `VIEWER_TOKEN_TTL_SECONDS`   | API                                  | `900`                                         | no            | no     | Maximum viewer JWT lifetime                                  |
-| `ADDRESS_SECRET_TTL_MS`      | API                                  | `1800000`                                     | no            | no     | Maximum address grant lifetime                               |
-| `CONTROL_LEASE_TTL_SECONDS`  | API                                  | `120`                                         | no            | no     | Default control lease; request still capped at 900           |
-| `RUN_BROWSER_TTL_SECONDS`    | API and AI                           | `3600`                                        | no            | no     | Absolute browser/run cleanup bound                           |
-| `EVENT_RETENTION_SECONDS`    | API                                  | `86400`                                       | no            | no     | Minimum terminal event-history retention                     |
-| `DEALPILOT_PUBLIC_ORIGIN`    | Compose → API/Caddy                  | local `http://localhost:8080`; none for cloud | cloud         | no     | Exact HTTPS origin used for viewer URLs                      |
-| `AI_ENVIRONMENT`             | AI                                   | `development`                                 | no            | no     | `development`, `test`, `production`                          |
-| `AI_HOST`                    | AI                                   | `0.0.0.0`                                     | no            | no     | Private listen address                                       |
-| `AI_PORT`                    | AI                                   | `8000`                                        | no            | no     | Private listen port                                          |
-| `AI_LOG_LEVEL`               | AI                                   | `INFO`                                        | no            | no     | Structured log level                                         |
-| `AI_MODEL`                   | AI                                   | `openai/gpt-5.2`                              | no            | no     | Exact OpenRouter Responses model                             |
-| `AI_VISION_FALLBACK_PROVIDER`| AI                                   | `openrouter`                                  | no            | no     | `openrouter` or direct `gemini` screenshot localizer         |
-| `AI_VISION_FALLBACK_MODEL`   | AI                                   | `AI_MODEL`                                    | no            | no     | OpenRouter stale-control screenshot model                    |
-| `AI_OPENROUTER_API_KEY`      | AI                                   | none                                          | live AI       | yes    | Never exposed to API, mobile, Caddy, screenshots, or reports |
-| `AI_GEMINI_API_KEY`          | AI                                   | none                                          | Gemini fallback | yes  | Direct Gemini key, granted only to the AI container          |
-| `AI_GEMINI_VISION_MODEL`     | AI                                   | `gemini-3-flash-preview`                      | no            | no     | Direct Gemini screenshot-grounding model                     |
-| `AI_SELENIUM_REMOTE_URL`     | AI                                   | `http://browser:4444/wd/hub`                  | live          | no     | Private WebDriver URL                                        |
-| `AI_CONTROL_API_URL`         | AI                                   | `http://api:3000`                             | live          | no     | Private API origin; internal paths appended                  |
-| `AI_INTERNAL_TOKEN`          | AI                                   | none                                          | live          | yes    | Compose maps from the same `INTERNAL_TOKEN` value            |
-| `AI_MAX_COMPUTER_STEPS`      | AI                                   | `80`                                          | no            | no     | Integer 1..200                                               |
-| `AI_MAX_VISUAL_RETRIES`      | AI                                   | `3`                                           | no            | no     | Detector failures before human takeover, 1..10               |
-| `AI_REQUEST_TIMEOUT_SECONDS` | AI                                   | `30`                                          | no            | no     | Internal/OpenRouter request timeout, 1..120                  |
-| `EXPO_PUBLIC_API_URL`        | mobile                               | local `http://localhost:8080`                 | build         | no     | Origin only; client appends `/api/v1`                        |
-| `EXPO_PUBLIC_AUTH_REQUIRED`  | mobile                               | `true`                                        | no            | no     | Must be `true` for any live/shared demo                      |
-| `COMPOSE_PROJECT_NAME`       | Compose                              | `dealpilot-phase1`                            | no            | no     | Resource namespace                                           |
-| `DEALPILOT_GATEWAY_PORT`     | Compose                              | `8080`                                        | no            | no     | Loopback-only gateway binding                                |
-| `POSTGRES_DB`                | Compose/PostgreSQL                   | `dealpilot`                                   | no            | no     | Database name                                                |
-| `POSTGRES_USER`              | Compose/PostgreSQL                   | `dealpilot`                                   | no            | no     | Database user                                                |
-| `POSTGRES_PASSWORD`          | Compose/PostgreSQL                   | none                                          | live          | yes    | No checked-in fallback                                       |
-| `CLOUDFLARE_TUNNEL_TOKEN`    | cloudflared                          | none                                          | cloud profile | yes    | Remotely managed tunnel token                                |
-| `CLOUDFLARED_LOG_LEVEL`      | cloudflared                          | `info`                                        | no            | no     | Tunnel log level                                             |
-| `POSTGRES_IMAGE`             | Compose                              | pinned tested tag                             | no            | no     | Deliberate upgrades only                                     |
-| `SELENIUM_IMAGE`             | Compose                              | pinned tested tag                             | no            | no     | Deliberate upgrades only                                     |
-| `CADDY_IMAGE`                | Compose                              | pinned tested tag                             | no            | no     | Deliberate upgrades only                                     |
-| `CLOUDFLARED_IMAGE`          | Compose                              | pinned tested tag                             | no            | no     | Deliberate upgrades only                                     |
-| `CADDY_API_UPSTREAM`         | Caddy                                | `api:3000`                                    | no            | no     | API reverse proxy/forward-auth upstream                      |
-| `CADDY_VIEWER_UPSTREAM`      | Caddy                                | `browser:7900`                                | no            | no     | Internal noVNC upstream                                      |
-| `SE_NODE_MAX_SESSIONS`       | Selenium                             | `1`                                           | no            | no     | Must remain one for MVP                                      |
-| `SE_NODE_SESSION_TIMEOUT`    | Selenium                             | `3600`                                        | no            | no     | Equal to browser TTL; must not expire at handoff             |
-| `SE_SESSION_REQUEST_TIMEOUT` | Selenium                             | `30`                                          | no            | no     | New-session request timeout                                  |
+| Variable                      | Owner / consumer                     | Default                                       | Required        | Secret | Contract behavior                                            |
+| ----------------------------- | ------------------------------------ | --------------------------------------------- | --------------- | ------ | ------------------------------------------------------------ |
+| `NODE_ENV`                    | API                                  | `development`                                 | no              | no     | `development`, `test`, `production`                          |
+| `PORT`                        | API                                  | `3000`                                        | no              | no     | API listen port                                              |
+| `DATABASE_ENABLED`            | API                                  | `false` locally; `true` in Compose            | live            | no     | Live MVP requires persistent event/report state              |
+| `DATABASE_URL`                | API                                  | local development URL                         | live            | yes    | PostgreSQL connection string; never logged                   |
+| `JWT_SECRET`                  | API                                  | none outside test                             | live            | yes    | User access-token signing; minimum 32 random bytes           |
+| `JWT_ACCESS_TTL`              | API                                  | `15m`                                         | no              | no     | User access-token lifetime                                   |
+| `JWT_REFRESH_TTL`             | API                                  | `7d`                                          | no              | no     | User refresh-token lifetime                                  |
+| `AI_SERVICE_URL`              | API                                  | `http://ai-service:8000` in Compose           | live            | no     | Private AI origin, no trailing slash                         |
+| `INTERNAL_TOKEN`              | API and Caddy; source for AI mapping | none                                          | live            | yes    | Shared internal authentication, minimum 32 random bytes      |
+| `VIEWER_TOKEN_SECRET`         | API                                  | none                                          | live            | yes    | HS256 viewer JWT key; distinct from `JWT_SECRET`             |
+| `VIEWER_TOKEN_TTL_SECONDS`    | API                                  | `900`                                         | no              | no     | Maximum viewer JWT lifetime                                  |
+| `ADDRESS_SECRET_TTL_MS`       | API                                  | `1800000`                                     | no              | no     | Maximum address grant lifetime                               |
+| `CONTROL_LEASE_TTL_SECONDS`   | API                                  | `120`                                         | no              | no     | Default control lease; request still capped at 900           |
+| `RUN_BROWSER_TTL_SECONDS`     | API and AI                           | `3600`                                        | no              | no     | Absolute browser/run cleanup bound                           |
+| `EVENT_RETENTION_SECONDS`     | API                                  | `86400`                                       | no              | no     | Minimum terminal event-history retention                     |
+| `DEALPILOT_PUBLIC_ORIGIN`     | Compose → API/Caddy                  | local `http://localhost:8080`; none for cloud | cloud           | no     | Exact HTTPS origin used for viewer URLs                      |
+| `AI_ENVIRONMENT`              | AI                                   | `development`                                 | no              | no     | `development`, `test`, `production`                          |
+| `AI_HOST`                     | AI                                   | `0.0.0.0`                                     | no              | no     | Private listen address                                       |
+| `AI_PORT`                     | AI                                   | `8000`                                        | no              | no     | Private listen port                                          |
+| `AI_LOG_LEVEL`                | AI                                   | `INFO`                                        | no              | no     | Structured log level                                         |
+| `AI_MODEL`                    | AI                                   | `openai/gpt-5.2`                              | no              | no     | Exact OpenRouter Responses model                             |
+| `AI_VISION_FALLBACK_PROVIDER` | AI                                   | `openrouter`                                  | no              | no     | `openrouter` or direct `gemini` screenshot localizer         |
+| `AI_VISION_FALLBACK_MODEL`    | AI                                   | `AI_MODEL`                                    | no              | no     | OpenRouter stale-control screenshot model                    |
+| `AI_OPENROUTER_API_KEY`       | AI                                   | none                                          | live AI         | yes    | Never exposed to API, mobile, Caddy, screenshots, or reports |
+| `AI_GEMINI_API_KEY`           | AI                                   | none                                          | Gemini fallback | yes    | Direct Gemini key, granted only to the AI container          |
+| `AI_GEMINI_VISION_MODEL`      | AI                                   | `gemini-3-flash-preview`                      | no              | no     | Direct Gemini screenshot-grounding model                     |
+| `AI_SELENIUM_REMOTE_URL`      | AI                                   | `http://browser:4444/wd/hub`                  | live            | no     | Private WebDriver URL                                        |
+| `AI_CONTROL_API_URL`          | AI                                   | `http://api:3000`                             | live            | no     | Private API origin; internal paths appended                  |
+| `AI_INTERNAL_TOKEN`           | AI                                   | none                                          | live            | yes    | Compose maps from the same `INTERNAL_TOKEN` value            |
+| `AI_MAX_COMPUTER_STEPS`       | AI                                   | `80`                                          | no              | no     | Integer 1..200                                               |
+| `AI_MAX_VISUAL_RETRIES`       | AI                                   | `3`                                           | no              | no     | Detector failures before human takeover, 1..10               |
+| `AI_REQUEST_TIMEOUT_SECONDS`  | AI                                   | `30`                                          | no              | no     | Internal/OpenRouter request timeout, 1..120                  |
+| `EXPO_PUBLIC_API_URL`         | mobile                               | local `http://localhost:8080`                 | build           | no     | Origin only; client appends `/api/v1`                        |
+| `EXPO_PUBLIC_AUTH_REQUIRED`   | mobile                               | `true`                                        | no              | no     | Must be `true` for any live/shared demo                      |
+| `COMPOSE_PROJECT_NAME`        | Compose                              | `dealpilot-phase1`                            | no              | no     | Resource namespace                                           |
+| `DEALPILOT_GATEWAY_PORT`      | Compose                              | `8080`                                        | no              | no     | Loopback-only gateway binding                                |
+| `POSTGRES_DB`                 | Compose/PostgreSQL                   | `dealpilot`                                   | no              | no     | Database name                                                |
+| `POSTGRES_USER`               | Compose/PostgreSQL                   | `dealpilot`                                   | no              | no     | Database user                                                |
+| `POSTGRES_PASSWORD`           | Compose/PostgreSQL                   | none                                          | live            | yes    | No checked-in fallback                                       |
+| `CLOUDFLARE_TUNNEL_TOKEN`     | cloudflared                          | none                                          | cloud profile   | yes    | Remotely managed tunnel token                                |
+| `CLOUDFLARED_LOG_LEVEL`       | cloudflared                          | `info`                                        | no              | no     | Tunnel log level                                             |
+| `POSTGRES_IMAGE`              | Compose                              | pinned tested tag                             | no              | no     | Deliberate upgrades only                                     |
+| `SELENIUM_IMAGE`              | Compose                              | pinned tested tag                             | no              | no     | Deliberate upgrades only                                     |
+| `CADDY_IMAGE`                 | Compose                              | pinned tested tag                             | no              | no     | Deliberate upgrades only                                     |
+| `CLOUDFLARED_IMAGE`           | Compose                              | pinned tested tag                             | no              | no     | Deliberate upgrades only                                     |
+| `CADDY_API_UPSTREAM`          | Caddy                                | `api:3000`                                    | no              | no     | API reverse proxy/forward-auth upstream                      |
+| `CADDY_VIEWER_UPSTREAM`       | Caddy                                | `browser:7900`                                | no              | no     | Internal noVNC upstream                                      |
+| `SE_NODE_MAX_SESSIONS`        | Selenium                             | `3`                                           | no              | no     | Maximum selectable merchants in one retail run               |
+| `SE_NODE_SESSION_TIMEOUT`     | Selenium                             | `3600`                                        | no              | no     | Equal to browser TTL; must not expire at handoff             |
+| `SE_SESSION_REQUEST_TIMEOUT`  | Selenium                             | `30`                                          | no              | no     | New-session request timeout                                  |
 
 Compose sets `TZ=Africa/Cairo` as a fixed literal on API, AI, Caddy, and Selenium; it is not user-configurable. Compose also fixes `SE_SCREEN_WIDTH=1280`, `SE_SCREEN_HEIGHT=800`, VNC enabled, extensions disabled, and WebDriver/noVNC ports internal-only. There are no `COUNTRY`, `MARKET`, `CURRENCY`, or configurable application timezone variables. Deprecated names such as `AI_OPENAI_API_KEY`, `INTERNAL_SERVICE_TOKEN`, `AI_INTERNAL_SERVICE_TOKEN`, `AI_NEST_API_INTERNAL_URL`, and `VIEWER_AUTH_SHARED_SECRET` are not accepted.
 
@@ -903,7 +916,7 @@ Authorization checks signature, algorithm, issuer, audience, time claims, run ow
 
 The AI MUST NOT submit a purchase, place an order, confirm checkout, confirm a booking, enter/request/inspect payment-card or wallet data, click a final irreversible control, or invoke an equivalent keyboard/script/network action. This prohibition applies even if the user asks the AI to do it.
 
-The AI may prepare carts, apply/remove public coupons, calculate totals, and navigate to the last reversible page. Seat selection that creates a temporary hold requires `seat_hold` approval immediately beforehand. Payment and any final order/booking action are performed only by the human while holding control of the same paused browser session.
+The AI may prepare carts, apply/remove public coupons, calculate totals, and navigate to the last reversible page. Seat selection that creates a temporary hold requires `seat_hold` approval immediately beforehand. Payment and any final order/booking action are performed only by the human while holding control of the retained merchant browser sessions.
 
 Automated tests may use fake providers and local HTML fixtures. Live demonstrations MUST disclose mocks and failures honestly; a mocked or recorded run cannot be presented as a working live merchant run. No test or live preflight may submit an order or booking.
 

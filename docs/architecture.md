@@ -11,7 +11,7 @@ DealPilot runs as one public edge and five private workloads:
 | NestJS API (`apps/api`)            | Canonical public contract, auth, run state machine, idempotency, approvals, leases, history, reports, and secret vault | Private `control-plane` and `data-plane`                    |
 | PostgreSQL                         | Durable accounts, run/control state, events, evidence metadata, offers, and reports                                    | Private `data-plane`                                        |
 | FastAPI AI (`services/ai-service`) | OpenRouter orchestration, safety enforcement, canonical internal commands/events, and per-run browser lifecycle        | Private `control-plane` and `agent-egress`                  |
-| Selenium Chromium/noVNC            | The single browser session used by both AI and human handoff                                                           | Private `control-plane` and `agent-egress`                  |
+| Selenium Chromium/noVNC            | Isolated per-merchant browser sessions used concurrently by AI and retained for human handoff                          | Private `control-plane` and `agent-egress`                  |
 
 The one-shot `migrate` workload runs every time the stack starts. The API does not start until all TypeORM migrations succeed, and API readiness checks for the required shopping tables.
 
@@ -25,15 +25,15 @@ Expo -> Caddy -> NestJS API -> FastAPI AI -> Selenium/merchant
                     +-> PostgreSQL -> REST history/report
 
 Expo <- Caddy <- API WebSocket replay + live events
-Expo -> Caddy -> API viewer authorization -> same Selenium noVNC session
+Expo -> Caddy -> API viewer authorization -> retained Selenium noVNC sessions
 ```
 
 1. Mobile sends authenticated requests to the origin plus `/api/v1`; it never calls AI, PostgreSQL, WebDriver, or noVNC directly.
 2. The API persists the run ID, calls `POST /internal/v1/runs` using `X-Internal-Token`, and changes public state only after an AI command is accepted.
-3. AI opens one Selenium session, requests explicit domain/address/seat-hold approvals when required, uploads each redacted PNG to the private evidence endpoint, and posts exact event envelopes to `POST /internal/v1/ai-events`.
+3. After domain approval, AI opens one Selenium session and one agent worker per selected merchant. The workers run concurrently, request explicit address/seat-hold approvals when required, upload each redacted PNG to the private evidence endpoint, and post serialized event envelopes to `POST /internal/v1/ai-events`.
 4. The API validates event state and references, materializes the report records, appends the durable event, and then publishes it to the WebSocket stream.
 5. A reconnecting mobile client supplies its last processed event ID, deduplicates by ID, and can fall back to REST event history and run polling.
-6. A view or control viewer token is issued by POST and sent only in an authorization header/cookie. The response establishes an HttpOnly viewer cookie for the web iframe, while native WebView sends the same token in its authorization header. Caddy privately authorizes both before proxying the same noVNC session; the token is never placed in a URL.
+6. A view or control viewer token is issued by POST and sent only in an authorization header/cookie. The response establishes an HttpOnly viewer cookie for the web iframe, while native WebView sends the same token in its authorization header. Caddy privately authorizes both before proxying the shared noVNC display for the retained merchant sessions; the token is never placed in a URL.
 
 The live AI adapter calls OpenRouter's stateless Responses endpoint with `openai/gpt-5.2`. It uses standard function tools for Selenium actions and incremental discoveries, resubmits the complete prior response/tool history on every model turn, and includes the latest redacted screenshot. If a labeled click becomes stale, an independent screenshot-grounding call locates the replacement control and sends its coordinates and current label back through the same Selenium safety checks. The localizer can use either OpenRouter or the direct Gemini Interactions API; Gemini avoids relying on OpenRouter's shared free-model router. Repeated detector failures pause the run for human control instead of terminating it. The installed `openai` Python package is only the OpenAI-compatible protocol client; primary live requests use the fixed `https://openrouter.ai/api/v1` base URL.
 
@@ -44,7 +44,7 @@ The live AI adapter calls OpenRouter's stateless Responses endpoint with `openai
 - API state is not advanced when an internal AI command rejects or times out.
 - Economic evidence is complete before the transition to `ready_for_handoff`; the final report is immutable afterward.
 - Merchant attempts can fail independently. Failed attempts and incomplete offers remain visible in the final report rather than disappearing.
-- One browser session and one controller are allowed. Claim pauses AI before the lease becomes active; release resumes AI against the same WebDriver session and cookies.
+- One isolated browser session is created for each selected merchant, while only one run and one human controller are allowed. Human control is offered only for an AI-originated user-input blocker, is bound to that merchant attempt, and focuses its retained browser before the lease becomes active. Release preserves every WebDriver session and cookie and resumes the interrupted AI work.
 
 ## Security boundaries
 

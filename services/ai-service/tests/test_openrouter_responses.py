@@ -94,9 +94,7 @@ async def test_openrouter_uses_bounded_stateless_history_and_standard_function_t
 
     continuation = responses.calls[1]
     assert "previous_response_id" not in continuation
-    assert continuation["input"][0]["content"] == [
-        responses.calls[0]["input"][0]["content"][0]
-    ]
+    assert continuation["input"][0]["content"] == [responses.calls[0]["input"][0]["content"][0]]
     assert continuation["input"][1]["name"] == "dealpilot_computer"
     assert continuation["input"][2]["type"] == "function_call_output"
     assert json.loads(continuation["input"][2]["output"]) == {
@@ -104,12 +102,15 @@ async def test_openrouter_uses_bounded_stateless_history_and_standard_function_t
         "actionCount": 1,
     }
     assert continuation["input"][3]["content"][1]["image_url"].endswith("YWZ0ZXI=")
-    assert sum(
-        part.get("type") == "input_image"
-        for item in continuation["input"]
-        for part in item.get("content", [])
-        if isinstance(item, dict)
-    ) == 1
+    assert (
+        sum(
+            part.get("type") == "input_image"
+            for item in continuation["input"]
+            for part in item.get("content", [])
+            if isinstance(item, dict)
+        )
+        == 1
+    )
     assert agent.last_response_id == "response-2"
 
 

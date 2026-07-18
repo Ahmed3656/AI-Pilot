@@ -4,7 +4,8 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -63,7 +64,7 @@ class RunBusyError(RuntimeError):
     def __init__(self, active_run_id: str, retry_after: int = 5) -> None:
         self.active_run_id = active_run_id
         self.retry_after = retry_after
-        super().__init__("The single MVP browser is busy with another active run")
+        super().__init__("The merchant browser pool is busy with another active run")
 
 
 class IdempotencyConflictError(RuntimeError):
@@ -92,13 +93,25 @@ class MerchantAttempt:
 
 
 @dataclass(slots=True)
+class MerchantWorker:
+    domain: str
+    attempt: MerchantAttempt
+    browser: SeleniumRemoteBrowser
+    agent: ComputerAgent
+    executor: BrowserActionExecutor | None = None
+    action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class RunRecord:
     request: InternalCreateRunRequest
     category: Category | None
     status: RunStatus
     browser_expires_at: datetime
-    browser: SeleniumRemoteBrowser
-    agent: ComputerAgent
+    browser: SeleniumRemoteBrowser | None = None
+    agent: ComputerAgent | None = None
     clarification_request_id: str | None = None
     domain_request_id: str | None = None
     address_request_id: str | None = None
@@ -113,6 +126,7 @@ class RunRecord:
     partial_coupons: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[dict[str, Any]] = field(default_factory=list)
     attempts: dict[str, MerchantAttempt] = field(default_factory=dict)
+    workers: dict[str, MerchantWorker] = field(default_factory=dict)
     resume_status: RunStatus | None = None
     error: str | None = None
     closed: bool = False
@@ -120,6 +134,7 @@ class RunRecord:
     domains_event: asyncio.Event = field(default_factory=asyncio.Event)
     seat_future: asyncio.Future[bool] | None = None
     action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pause_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     command_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     task: asyncio.Task[None] | None = None
     ttl_task: asyncio.Task[None] | None = None
@@ -186,6 +201,13 @@ _ADDRESS_FIELDS = {
     "landmark",
     "postalCode",
 }
+
+_USER_INPUT_PAUSE_REASONS = {
+    PauseReason.LOGIN,
+    PauseReason.ONE_TIME_CODE,
+    PauseReason.CAPTCHA,
+    PauseReason.BROWSER_WARNING,
+}
 _COUPON_STATUSES = {"rejected", "not_tested", "technical_failure"}
 _COUPON_REJECTION_REASONS = {
     "invalid_code",
@@ -215,9 +237,11 @@ class ScopedSecretResolver:
         self,
         record: RunRecord,
         control: ControlAPIClient,
+        browser: SeleniumRemoteBrowser,
     ) -> None:
         self.record = record
         self.control = control
+        self.browser = browser
 
     async def resolve_secret(self, handle: str, run_id: str) -> str:
         if handle not in _ADDRESS_FIELDS:
@@ -231,7 +255,7 @@ class ScopedSecretResolver:
             self.record.address_handle = None
             self.record.address_domains.clear()
             raise PauseRequired(PauseReason.ADDRESS_CONSENT, "Address grant has expired")
-        merchant_domain = self.record.browser.expected_domain
+        merchant_domain = self.browser.expected_domain
         if not merchant_domain or merchant_domain not in self.record.address_domains:
             raise SafetyViolation("Address grant is not scoped to the active merchant domain")
         return await self.control.resolve_secret(
@@ -240,6 +264,24 @@ class ScopedSecretResolver:
             merchant_domain,
             handle,
         )
+
+
+class SerializedControlClient:
+    """Keep concurrent merchant events in one deterministic control-plane order."""
+
+    def __init__(self, control: ControlAPIClient) -> None:
+        self.control = control
+        self.event_lock = asyncio.Lock()
+
+    async def emit(self, *args: Any, **kwargs: Any) -> str:
+        async with self.event_lock:
+            return await self.control.emit(*args, **kwargs)
+
+    async def resolve_secret(self, *args: Any, **kwargs: Any) -> str:
+        return await self.control.resolve_secret(*args, **kwargs)
+
+    async def upload_evidence(self, *args: Any, **kwargs: Any) -> None:
+        await self.control.upload_evidence(*args, **kwargs)
 
 
 class RunManager:
@@ -252,7 +294,7 @@ class RunManager:
         browser_factory: Callable[[], SeleniumRemoteBrowser] | None = None,
     ) -> None:
         self.settings = settings
-        self.control = control
+        self.control = SerializedControlClient(control)
         self.agent_factory = agent_factory or self._default_agent
         self.browser_factory = browser_factory or (
             lambda: SeleniumRemoteBrowser(settings.selenium_remote_url)
@@ -440,7 +482,7 @@ class RunManager:
         elif command.name is CommandName.APPROVE_SEAT_HOLD:
             await self._approve_seat_hold(record, payload)
         elif command.name is CommandName.PAUSE:
-            await self._pause_command(record, str(payload["reason"]))
+            await self._pause_command(record, payload)
         elif command.name is CommandName.RESUME:
             await self._resume_command(record, str(payload["reason"]))
         elif command.name is CommandName.CANCEL:
@@ -527,20 +569,38 @@ class RunManager:
             raise InvalidTransitionError("No seat-hold approval is pending")
         future.set_result(True)
 
-    async def _pause_command(self, record: RunRecord, reason: str) -> None:
+    async def _pause_command(self, record: RunRecord, payload: dict[str, Any]) -> None:
+        reason = str(payload["reason"])
         if reason == "control_claim":
-            if record.status not in {RunStatus.READY_FOR_HANDOFF, RunStatus.PAUSED}:
-                raise InvalidTransitionError("control claim requires ready_for_handoff or paused")
+            if record.status is not RunStatus.PAUSED:
+                raise InvalidTransitionError("control claim requires a user-input pause")
+            merchant_attempt_id = str(payload["merchantAttemptId"])
+            merchant_domain = str(payload["merchantDomain"])
+            worker = record.workers.get(merchant_domain)
+            if worker is None or worker.attempt.id != merchant_attempt_id:
+                raise InvalidTransitionError("Control claim merchant target is not active")
             record.active_event.clear()
-            async with record.action_lock:
+            async with self._all_action_locks(record):
+                await asyncio.to_thread(worker.browser.focus_for_takeover)
                 record.status = RunStatus.USER_TAKEOVER
             return
         if record.status is RunStatus.PAUSED:
             return
         record.resume_status = record.status
         record.active_event.clear()
-        async with record.action_lock:
+        async with self._all_action_locks(record):
             record.status = RunStatus.PAUSED
+
+    @staticmethod
+    @asynccontextmanager
+    async def _all_action_locks(record: RunRecord) -> AsyncIterator[None]:
+        locks = [worker.action_lock for worker in record.workers.values()]
+        if not locks:
+            locks = [record.action_lock]
+        async with AsyncExitStack() as stack:
+            for lock in locks:
+                await stack.enter_async_context(lock)
+            yield
 
     async def _resume_command(self, record: RunRecord, reason: str) -> None:
         if reason in {"control_release", "lease_expired"}:
@@ -564,48 +624,24 @@ class RunManager:
             # session startup. The API persists the accepted run first; all
             # browser work and any resulting failure are reported by this
             # background task through canonical run events.
+            assert record.browser is not None
             await asyncio.to_thread(record.browser.connect)
             await self._request_domains(record)
             await record.domains_event.wait()
             if record.status in TERMINAL_STATUSES:
                 return
             record.status = RunStatus.COMPARING
-            await self._open_approved_merchants(record)
-            if not any(not attempt.completed for attempt in record.attempts.values()):
+            await self._run_approved_merchants(record)
+            if record.status in TERMINAL_STATUSES:
+                return
+            successful_results = [
+                worker.result for worker in record.workers.values() if worker.result is not None
+            ]
+            if not successful_results and not record.partial_offers:
                 await self._fail(record, "NO_MERCHANT_AVAILABLE", retryable=True)
                 return
             assert record.category is not None
-            executor = BrowserActionExecutor(
-                record.browser,
-                category=record.category,
-                run_id=record.run_id,
-                event_sink=self.control,
-                secret_resolver=ScopedSecretResolver(record, self.control),
-                approval_requester=lambda approval_type, details: self._request_approval(
-                    record, approval_type, details
-                ),
-                approved_domains=lambda: record.approved_domains,
-                pause_requester=lambda exc: self._pause_for_safety(record, exc),
-                wait_until_active=record.active_event.wait,
-                status_getter=lambda: record.status,
-                merchant_attempt_getter=lambda: _attempt_id(record, record.browser.expected_domain),
-                action_lock=record.action_lock,
-            )
-            record.executor = executor
-            raw = await record.agent.run(
-                query=record.request.query,
-                category=record.category,
-                executor=executor,
-                address_handle=record.address_handle,
-                discovery_sink=lambda kind, data: self._record_discovery(record, kind, data),
-            )
-            await record.active_event.wait()
-            raw = _attach_evidence(raw, executor.evidence_ids)
-            record.result = validate_agent_result(
-                record.category,
-                raw,
-                approved_domains=record.approved_domains,
-            )
+            record.result = self._merge_merchant_results(record)
             await self._emit_final_discoveries(record)
             await self._complete_attempts(record)
             await self.control.emit(
@@ -694,14 +730,34 @@ class RunManager:
             status=RunStatus.AWAITING_DOMAIN_APPROVAL,
         )
 
-    async def _open_approved_merchants(self, record: RunRecord) -> None:
+    async def _run_approved_merchants(self, record: RunRecord) -> None:
         assert record.category is not None
-        fixture_loaded = False
+        workers: list[MerchantWorker] = []
         for domain in ALLOWED_DOMAINS[record.category]:
             if domain not in record.approved_domains:
                 continue
             attempt = MerchantAttempt(id=f"attempt:{uuid4()}", domain=domain, started=True)
             record.attempts[domain] = attempt
+            first_worker = not workers
+            browser = (
+                record.browser
+                if first_worker and record.browser is not None
+                else self.browser_factory()
+            )
+            agent = (
+                record.agent if first_worker and record.agent is not None else self.agent_factory()
+            )
+            worker = MerchantWorker(
+                domain=domain,
+                attempt=attempt,
+                browser=browser,
+                agent=agent,
+            )
+            record.workers[domain] = worker
+            if record.browser is None:
+                record.browser = worker.browser
+                record.agent = worker.agent
+            workers.append(worker)
             await self.control.emit(
                 record.run_id,
                 "merchant.attempt_started",
@@ -713,69 +769,189 @@ class RunManager:
                 },
                 status=RunStatus.COMPARING,
             )
-            if self.settings.environment == "test":
-                if not fixture_loaded:
-                    await asyncio.to_thread(
-                        record.browser.load_deterministic_test_fixture,
-                        domain,
-                        record.category,
-                        record.approved_domains,
-                    )
-                    fixture_loaded = True
-                else:
-                    await self._finish_attempt(
-                        record,
-                        attempt,
-                        "unavailable",
-                        "TEST_MERCHANT_UNAVAILABLE",
-                    )
-                    await self.control.emit(
-                        record.run_id,
-                        "run.warning",
-                        {
-                            "code": "TEST_MERCHANT_UNAVAILABLE",
-                            "message": "Deterministic test adapter simulated a merchant failure.",
-                            "merchantAttemptId": attempt.id,
-                            "evidenceIds": [],
-                        },
-                        status=RunStatus.COMPARING,
-                    )
+
+        tasks = [
+            asyncio.create_task(
+                self._run_merchant(record, worker),
+                name=f"dealpilot-merchant-{record.run_id}-{worker.domain}",
+            )
+            for worker in workers
+        ]
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        for worker, outcome in zip(workers, outcomes, strict=True):
+            if not isinstance(outcome, BaseException):
                 continue
-            try:
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome
+            worker.error = self._redact_exception(record, outcome, worker.executor)
+            logger.error(
+                "Merchant worker escaped failure boundary run_id=%s merchant=%s "
+                "error_type=%s error=%s",
+                record.run_id,
+                worker.domain,
+                type(outcome).__name__,
+                worker.error,
+            )
+            await self._finish_attempt(
+                record,
+                worker.attempt,
+                "failed",
+                "MERCHANT_RUN_FAILED",
+            )
+
+    async def _run_merchant(self, record: RunRecord, worker: MerchantWorker) -> None:
+        assert record.category is not None
+        try:
+            if worker.browser is not record.browser:
+                await asyncio.to_thread(worker.browser.connect)
+            if self.settings.environment == "test":
                 await asyncio.to_thread(
-                    record.browser.navigate,
-                    _merchant_start_url(record, domain),
+                    worker.browser.load_deterministic_test_fixture,
+                    worker.domain,
                     record.category,
-                    record.approved_domains,
-                    separate_tab=record.category is Category.RETAIL,
+                    {worker.domain},
                 )
-            except PauseRequired as exc:
-                while True:
-                    await self._pause_for_safety(record, exc)
-                    if record.status in TERMINAL_STATUSES:
-                        return
-                    try:
-                        await asyncio.to_thread(
-                            record.browser.guard,
-                            record.category,
-                            record.approved_domains,
-                        )
-                        break
-                    except PauseRequired as next_exc:
-                        exc = next_exc
-            except Exception as exc:
-                await self._finish_attempt(record, attempt, "failed", type(exc).__name__.upper())
-                await self.control.emit(
-                    record.run_id,
-                    "run.warning",
-                    {
-                        "code": "MERCHANT_NAVIGATION_FAILED",
-                        "message": f"{_MERCHANT_NAMES[domain]} could not be opened.",
-                        "merchantAttemptId": attempt.id,
-                        "evidenceIds": [],
-                    },
-                    status=RunStatus.COMPARING,
-                )
+            else:
+                await self._navigate_merchant(record, worker)
+            if record.status in TERMINAL_STATUSES:
+                return
+            executor = BrowserActionExecutor(
+                worker.browser,
+                category=record.category,
+                run_id=record.run_id,
+                event_sink=self.control,
+                secret_resolver=ScopedSecretResolver(record, self.control, worker.browser),
+                approval_requester=lambda approval_type, details: self._request_approval(
+                    record, approval_type, details
+                ),
+                approved_domains={worker.domain},
+                pause_requester=lambda exc: self._pause_for_safety(
+                    record, exc, browser=worker.browser
+                ),
+                wait_until_active=record.active_event.wait,
+                status_getter=lambda: record.status,
+                merchant_attempt_getter=lambda: worker.attempt.id,
+                action_lock=worker.action_lock,
+            )
+            worker.executor = executor
+            if record.executor is None:
+                record.executor = executor
+            raw = await worker.agent.run(
+                query=record.request.query,
+                category=record.category,
+                executor=executor,
+                address_handle=record.address_handle,
+                discovery_sink=lambda kind, data: self._record_discovery(
+                    record,
+                    kind,
+                    data,
+                    merchant_domain=worker.domain,
+                ),
+            )
+            await record.active_event.wait()
+            raw = _attach_evidence(raw, executor.evidence_ids)
+            worker.result = validate_agent_result(
+                record.category,
+                raw,
+                approved_domains={worker.domain},
+            )
+            for candidate in worker.result.get("candidates", []):
+                candidate["merchant"] = worker.domain
+            for coupon in worker.result.get("coupon_attempts", []):
+                coupon["merchant"] = worker.domain
+            await self._finish_attempt(record, worker.attempt, "succeeded", None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            worker.error = self._redact_exception(record, exc, worker.executor)
+            logger.warning(
+                "Merchant worker failed run_id=%s merchant=%s error_type=%s error=%s",
+                record.run_id,
+                worker.domain,
+                type(exc).__name__,
+                worker.error,
+            )
+            await self._finish_attempt(
+                record,
+                worker.attempt,
+                "failed",
+                "MERCHANT_RUN_FAILED",
+            )
+            warning = {
+                "code": "MERCHANT_RUN_FAILED",
+                "message": f"{_MERCHANT_NAMES[worker.domain]} could not be completed.",
+                "merchantAttemptId": worker.attempt.id,
+                "evidenceIds": list(worker.attempt.evidence_ids),
+            }
+            record.warnings.append(warning)
+            await self.control.emit(
+                record.run_id,
+                "run.warning",
+                warning,
+                status=record.status,
+            )
+
+    async def _navigate_merchant(self, record: RunRecord, worker: MerchantWorker) -> None:
+        assert record.category is not None
+        try:
+            await asyncio.to_thread(
+                worker.browser.navigate,
+                _merchant_start_url(record, worker.domain),
+                record.category,
+                {worker.domain},
+                separate_tab=record.category is Category.RETAIL,
+            )
+        except PauseRequired as exc:
+            while True:
+                await self._pause_for_safety(record, exc, browser=worker.browser)
+                if record.status in TERMINAL_STATUSES:
+                    return
+                try:
+                    await asyncio.to_thread(
+                        worker.browser.guard,
+                        record.category,
+                        {worker.domain},
+                    )
+                    return
+                except PauseRequired as next_exc:
+                    exc = next_exc
+
+    def _merge_merchant_results(self, record: RunRecord) -> dict[str, Any]:
+        assert record.category is not None
+        candidates = [
+            candidate
+            for worker in record.workers.values()
+            if worker.result is not None
+            for candidate in worker.result.get("candidates", [])
+        ]
+        failed_domains = {
+            worker.domain for worker in record.workers.values() if worker.result is None
+        }
+        candidates.extend(
+            offer
+            for offer in record.partial_offers
+            if _merchant_domain(offer.get("merchant")) in failed_domains
+        )
+        result = validate_agent_result(
+            record.category,
+            json.dumps({"candidates": candidates, "coupon_attempts": []}),
+            approved_domains=record.approved_domains,
+        )
+        result["coupon_attempts"] = [
+            coupon
+            for worker in record.workers.values()
+            if worker.result is not None
+            for coupon in worker.result.get("coupon_attempts", [])
+        ]
+        result["stopped_before"] = "payment"
+        result["notes"] = [
+            note
+            for worker in record.workers.values()
+            if worker.result is not None
+            for note in worker.result.get("notes", [])
+        ]
+        result["partial"] = any(worker.error for worker in record.workers.values())
+        return result
 
     async def _request_approval(
         self,
@@ -808,47 +984,73 @@ class RunManager:
         record.resume_status = None
         return approved
 
-    async def _pause_for_safety(self, record: RunRecord, exc: PauseRequired) -> None:
-        previous = record.status
-        record.resume_status = previous
-        record.active_event.clear()
-        warning = {
-            "code": exc.reason_code.value,
-            "message": self._redact_text(record, exc.reason),
-            "merchantAttemptId": None,
-            "evidenceIds": [],
-        }
-        record.warnings.append(warning)
-        if exc.reason_code is PauseReason.ADDRESS_CONSENT:
-            record.address_request_id = f"address:{uuid4()}"
-            record.status = RunStatus.AWAITING_ADDRESS_CONSENT
-            active_domain = record.browser.expected_domain
-            recipients = (
-                [active_domain]
-                if active_domain in record.approved_domains
-                else sorted(record.approved_domains)
-            )
-            await self.control.emit(
-                record.run_id,
-                "address.approval_required",
-                {
-                    "requestId": record.address_request_id,
-                    "merchantDomains": recipients,
-                    "fields": sorted(_ADDRESS_FIELDS),
-                },
-                status=RunStatus.AWAITING_ADDRESS_CONSENT,
-            )
-        else:
-            await self._transition(record, RunStatus.PAUSED)
-            await self.control.emit(
-                record.run_id,
-                "run.warning",
-                warning,
-                status=RunStatus.PAUSED,
-            )
+    async def _pause_for_safety(
+        self,
+        record: RunRecord,
+        exc: PauseRequired,
+        *,
+        browser: SeleniumRemoteBrowser | None = None,
+    ) -> None:
+        async with record.pause_lock:
+            if record.status in TERMINAL_STATUSES:
+                return
+            if not record.active_event.is_set() and record.status in {
+                RunStatus.PAUSED,
+                RunStatus.AWAITING_ADDRESS_CONSENT,
+                RunStatus.USER_TAKEOVER,
+            }:
+                pass
+            else:
+                previous = record.status
+                record.resume_status = previous
+                record.active_event.clear()
+                warning = {
+                    "code": exc.reason_code.value,
+                    "message": self._redact_text(record, exc.reason),
+                    "merchantAttemptId": _attempt_id(
+                        record,
+                        browser.expected_domain if browser else None,
+                    ),
+                    "evidenceIds": [],
+                    "requiresUserInput": exc.reason_code in _USER_INPUT_PAUSE_REASONS,
+                }
+                record.warnings.append(warning)
+                if exc.reason_code is PauseReason.ADDRESS_CONSENT:
+                    record.address_request_id = f"address:{uuid4()}"
+                    record.status = RunStatus.AWAITING_ADDRESS_CONSENT
+                    await self.control.emit(
+                        record.run_id,
+                        "address.approval_required",
+                        {
+                            "requestId": record.address_request_id,
+                            "merchantDomains": sorted(record.approved_domains),
+                            "fields": sorted(_ADDRESS_FIELDS),
+                        },
+                        status=RunStatus.AWAITING_ADDRESS_CONSENT,
+                    )
+                else:
+                    await self._transition(record, RunStatus.PAUSED)
+                    await self.control.emit(
+                        record.run_id,
+                        "run.warning",
+                        warning,
+                        status=RunStatus.PAUSED,
+                    )
         await record.active_event.wait()
 
-    async def _record_discovery(self, record: RunRecord, kind: str, data: dict[str, Any]) -> None:
+    async def _record_discovery(
+        self,
+        record: RunRecord,
+        kind: str,
+        data: dict[str, Any],
+        *,
+        merchant_domain: str | None = None,
+    ) -> None:
+        data = dict(data)
+        if merchant_domain:
+            data["merchant_domain"] = merchant_domain
+            if kind in {"offer", "coupon"}:
+                data["merchant"] = merchant_domain
         if kind == "offer":
             record.partial_offers.append(data)
             await self._emit_offer(record, data)
@@ -873,7 +1075,7 @@ class RunManager:
                 status=record.status,
             )
         elif kind == "merchant_attempt":
-            domain = str(data.get("merchant_domain", ""))
+            domain = merchant_domain or str(data.get("merchant_domain", ""))
             attempt = record.attempts.get(domain)
             outcome = data.get("outcome")
             if attempt is not None and isinstance(outcome, str):
@@ -975,10 +1177,11 @@ class RunManager:
     async def _complete_attempts(self, record: RunRecord, failure_code: str | None = None) -> None:
         for attempt in record.attempts.values():
             if not attempt.completed:
-                if record.executor:
+                worker = record.workers.get(attempt.domain)
+                if worker and worker.executor:
                     attempt.evidence_ids.extend(
                         evidence_id
-                        for evidence_id in record.executor.evidence_by_attempt.get(attempt.id, [])
+                        for evidence_id in worker.executor.evidence_by_attempt.get(attempt.id, [])
                         if evidence_id not in attempt.evidence_ids
                     )
                 await self._finish_attempt(
@@ -997,6 +1200,13 @@ class RunManager:
     ) -> None:
         if attempt.completed:
             return
+        worker = record.workers.get(attempt.domain)
+        if worker and worker.executor:
+            attempt.evidence_ids.extend(
+                evidence_id
+                for evidence_id in worker.executor.evidence_by_attempt.get(attempt.id, [])
+                if evidence_id not in attempt.evidence_ids
+            )
         attempt.completed = True
         await self.control.emit(
             record.run_id,
@@ -1059,7 +1269,17 @@ class RunManager:
         record.address_domains.clear()
         record.address_expires_at = None
         record.active_event.set()
-        await asyncio.to_thread(record.browser.close)
+        browsers = list(
+            {id(worker.browser): worker.browser for worker in record.workers.values()}.values()
+        )
+        if record.browser is not None and all(
+            record.browser is not browser for browser in browsers
+        ):
+            browsers.append(record.browser)
+        await asyncio.gather(
+            *(asyncio.to_thread(browser.close) for browser in browsers),
+            return_exceptions=True,
+        )
         if record.ttl_task and record.ttl_task is not asyncio.current_task():
             record.ttl_task.cancel()
         async with self._admission_lock:
@@ -1082,7 +1302,22 @@ class RunManager:
 
     @staticmethod
     def _redact_text(record: RunRecord, value: str) -> str:
-        return record.executor.redactor.mask(value) if record.executor else value
+        masked = value
+        for worker in record.workers.values():
+            if worker.executor:
+                masked = worker.executor.redactor.mask(masked)
+        return record.executor.redactor.mask(masked) if record.executor else masked
+
+    @staticmethod
+    def _redact_exception(
+        record: RunRecord,
+        exc: BaseException,
+        executor: BrowserActionExecutor | None,
+    ) -> str:
+        value = str(exc) or type(exc).__name__
+        if executor:
+            value = executor.redactor.mask(value)
+        return RunManager._redact_text(record, value)
 
 
 def _fingerprint(value: Any) -> str:
@@ -1102,10 +1337,17 @@ def _stable_id(prefix: str, value: dict[str, Any]) -> str:
 
 
 def _attempt_id(record: RunRecord, merchant: Any) -> str | None:
+    domain = _merchant_domain(merchant)
+    if domain and domain in record.attempts:
+        return record.attempts[domain].id
+    return None
+
+
+def _merchant_domain(merchant: Any) -> str | None:
     folded = str(merchant or "").casefold()
-    for domain, attempt in record.attempts.items():
-        if domain in folded or _MERCHANT_NAMES[domain].casefold() in folded:
-            return attempt.id
+    for domain, name in _MERCHANT_NAMES.items():
+        if domain in folded or name.casefold() in folded:
+            return domain
     return None
 
 

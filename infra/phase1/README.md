@@ -62,7 +62,7 @@ Only Caddy publishes a host port, bound to `${DEALPILOT_GATEWAY_BIND:-127.0.0.1}
 | `data-plane` (internal)    | API, migration job, PostgreSQL | Private database traffic                      |
 | `agent-egress`             | AI, Selenium                   | OpenRouter and approved Egypt merchant egress |
 
-Selenium exposes only container ports `4444` and `7900`. It permits one session, uses a 1280x800 screen and browser window, disables extensions, and keeps the VNC server interactive so a valid temporary control token can operate the same browser session. Unauthenticated access remains impossible because noVNC is reachable only through Caddy authorization.
+Selenium exposes only container ports `4444` and `7900`. It permits up to three concurrent sessions—one for each selected retail merchant—uses a 1280x800 screen and browser window, disables extensions, and keeps the VNC server interactive so a valid temporary control token can operate the retained merchant browsers. Unauthenticated access remains impossible because noVNC is reachable only through Caddy authorization.
 
 ## Canonical gateway routes
 
