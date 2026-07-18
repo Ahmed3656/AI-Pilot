@@ -21,6 +21,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 class FakeEventSink:
     def __init__(self) -> None:
         self.events: list[tuple[str, dict[str, Any]]] = []
+        self.uploads: list[tuple[str, str, bytes]] = []
 
     async def emit(
         self,
@@ -33,6 +34,9 @@ class FakeEventSink:
         assert run_id == "run-1"
         assert status is not None
         self.events.append((event_type, payload))
+
+    async def upload_evidence(self, run_id: str, evidence_id: str, png: bytes) -> None:
+        self.uploads.append((run_id, evidence_id, png))
 
 
 class FakeResolver:
@@ -171,17 +175,20 @@ async def test_capture_pauses_and_returns_last_safe_screenshot() -> None:
     async def pause(exc: PauseRequired) -> None:
         pauses.append(exc)
 
+    events = FakeEventSink()
     executor = BrowserActionExecutor(
         browser,  # type: ignore[arg-type]
         category=Category.RETAIL,
         run_id="run-1",
-        event_sink=FakeEventSink(),
+        event_sink=events,
         secret_resolver=FakeResolver(),
         approval_requester=approve,
         approved_domains={"amazon.eg"},
         pause_requester=pause,
     )
     safe_screenshot = await executor.capture()
+    assert events.uploads[0][0] == "run-1"
+    assert events.uploads[0][2] == b"original-resolution-png"
     browser.should_pause = True
 
     assert await executor.capture() == safe_screenshot

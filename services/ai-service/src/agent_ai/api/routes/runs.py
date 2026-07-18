@@ -79,6 +79,13 @@ async def create_run(
             "RATE_LIMITED",
             "The single MVP browser is busy; retry this queued run later",
             status.HTTP_429_TOO_MANY_REQUESTS,
+            details=[
+                {
+                    "field": "runId",
+                    "code": "ACTIVE_RUN",
+                    "message": exc.active_run_id,
+                }
+            ],
             headers={"Retry-After": str(exc.retry_after)},
         )
     except IdempotencyConflictError as exc:

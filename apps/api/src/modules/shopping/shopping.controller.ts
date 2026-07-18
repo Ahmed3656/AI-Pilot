@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -19,7 +20,7 @@ import {
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { AuthenticatedActor } from '../auth/types/authenticated-actor.type';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
@@ -236,13 +237,15 @@ export class ShoppingController {
   @Post('runs/:runId/viewer-tokens')
   @HttpCode(HttpStatus.CREATED)
   @ApiHeader({ name: 'Idempotency-Key', required: true })
-  viewerToken(
+  async viewerToken(
     @Req() request: AuthRequest,
     @Param('runId') runId: string,
     @Headers('idempotency-key') key: string | undefined,
+    @Headers('x-forwarded-proto') forwardedProto: string | undefined,
+    @Res({ passthrough: true }) response: Response,
     @Body() dto: CreateViewerTokenDto,
   ) {
-    return this.idempotency.execute(
+    const viewer = await this.idempotency.execute(
       request.user.id,
       'POST',
       `/api/v1/shopping/runs/${runId}/viewer-tokens`,
@@ -250,6 +253,15 @@ export class ShoppingController {
       dto,
       () => this.shopping.viewerToken(request.user.id, runId, dto),
     );
+    const maxAge = Math.max(
+      1,
+      Math.floor((new Date(viewer.expiresAt).getTime() - Date.now()) / 1000),
+    );
+    response.setHeader(
+      'Set-Cookie',
+      `dealpilot_viewer=${viewer.token}; Path=/viewer; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${forwardedProto === 'https' ? '; Secure' : ''}`,
+    );
+    return viewer;
   }
 
   @Get('runs/:runId/events')
@@ -269,5 +281,23 @@ export class ShoppingController {
   @Get('runs/:runId/report')
   report(@Req() request: AuthRequest, @Param('runId') runId: string) {
     return this.shopping.report(request.user.id, runId);
+  }
+
+  @Get('runs/:runId/evidence/:evidenceId')
+  async evidence(
+    @Req() request: AuthRequest,
+    @Param('runId') runId: string,
+    @Param('evidenceId') evidenceId: string,
+    @Res() response: Response,
+  ) {
+    const evidence = await this.shopping.evidence(
+      request.user.id,
+      runId,
+      evidenceId,
+    );
+    response.setHeader('Content-Type', evidence.contentType);
+    response.setHeader('Content-Length', String(evidence.content.length));
+    response.setHeader('Content-Disposition', 'inline');
+    response.send(evidence.content);
   }
 }

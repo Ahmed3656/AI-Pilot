@@ -11,6 +11,16 @@ interface AcceptedResponse {
   duplicate: boolean;
 }
 
+export class AiBrowserBusyError extends Error {
+  constructor(
+    readonly activeRunId: string | null,
+    readonly retryAfterSeconds: number,
+  ) {
+    super('The shopping browser is busy with an active run');
+    this.name = 'AiBrowserBusyError';
+  }
+}
+
 @Injectable()
 export class ShoppingAiClientService {
   private readonly baseUrl?: string;
@@ -98,6 +108,17 @@ export class ShoppingAiClientService {
           signal: AbortSignal.timeout(this.timeoutMs),
         });
         if (!response.ok) {
+          if (response.status === 429) {
+            const errorBody: unknown = await response
+              .json()
+              .catch(() => undefined);
+            if (contractErrorCode(errorBody) === 'RATE_LIMITED') {
+              throw new AiBrowserBusyError(
+                activeRunId(errorBody),
+                retryAfterSeconds(response.headers.get('retry-after')),
+              );
+            }
+          }
           if (response.status < 500)
             this.rejected(
               `AI service rejected the request with HTTP ${response.status}`,
@@ -106,7 +127,11 @@ export class ShoppingAiClientService {
         }
         return (await response.json()) as T;
       } catch (error) {
-        if (error instanceof ContractException) throw error;
+        if (
+          error instanceof ContractException ||
+          error instanceof AiBrowserBusyError
+        )
+          throw error;
         lastError = error;
       }
     }
@@ -124,4 +149,34 @@ export class ShoppingAiClientService {
   private rejected(message: string): never {
     throw new ContractException('AI_COMMAND_REJECTED', 502, message);
   }
+}
+
+function contractErrorCode(value: unknown): string | null {
+  if (!isRecord(value) || !isRecord(value.error)) return null;
+  return typeof value.error.code === 'string' ? value.error.code : null;
+}
+
+function activeRunId(value: unknown): string | null {
+  if (!isRecord(value) || !isRecord(value.error)) return null;
+  const details = value.error.details;
+  if (!Array.isArray(details)) return null;
+  const detail = (details as unknown[]).find(
+    (candidate) =>
+      isRecord(candidate) &&
+      candidate.field === 'runId' &&
+      candidate.code === 'ACTIVE_RUN' &&
+      typeof candidate.message === 'string',
+  );
+  if (!isRecord(detail) || typeof detail.message !== 'string') return null;
+  const runId = detail.message.trim();
+  return runId && runId.length <= 128 ? runId : null;
+}
+
+function retryAfterSeconds(value: string | null): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 60) : 5;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }

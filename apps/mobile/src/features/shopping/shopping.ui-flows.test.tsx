@@ -9,7 +9,7 @@ import { TextInput } from 'react-native';
 import { ApprovalCard } from './components/ApprovalCard';
 import { CandidateCard } from './components/CandidateCard';
 import { RemoteBrowser } from './components/RemoteBrowser';
-import { RunTimeline } from './components/RunTimeline';
+import { EvidenceGallery, RunTimeline } from './components/RunTimeline';
 import { ShoppingReportScreen } from './screens/ShoppingReportScreen';
 import {
   claimControl,
@@ -330,6 +330,35 @@ describe('shopping UI flows', () => {
     );
     expect(screen.getByText(/MERCHANT_BLOCKED/)).toBeTruthy();
     expect(screen.getByText('BROWSER_TTL_EXPIRED')).toBeTruthy();
+  });
+
+  it('opens evidence screenshots full-screen and closes the preview', () => {
+    render(
+      <EvidenceGallery
+        evidence={[
+          {
+            id: 'evidence-screenshot-1',
+            kind: 'screenshot',
+            uri: 'https://demo.example/evidence.png',
+            sha256: 'a'.repeat(64),
+            capturedAt: run.updatedAt,
+            merchantAttemptId: 'attempt-1',
+            redacted: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.press(
+      screen.getByRole('button', {
+        name: 'openScreenshot evidence-screenshot-1',
+      }),
+    );
+    expect(screen.getByTestId('evidence-lightbox')).toBeTruthy();
+    expect(screen.getByTestId('evidence-screenshot-full')).toBeTruthy();
+
+    fireEvent.press(screen.getByRole('button', { name: 'close' }));
+    expect(screen.queryByTestId('evidence-screenshot-full')).toBeNull();
   });
 
   it('renders warnings, excluded offers, and partial failures from a partial report', () => {

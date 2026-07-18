@@ -20,6 +20,7 @@ import { ControlLease, RunApproval, RunEvent, ShoppingRun } from './entities';
 import { SHOPPING_STORE, ShoppingStore } from './repositories';
 import {
   AddressSecretVaultService,
+  AiBrowserBusyError,
   RunStateMachine,
   ShoppingAiClientService,
   ShoppingEventStreamService,
@@ -119,7 +120,37 @@ export class ShoppingService implements OnModuleDestroy {
       browserExpiresAt: new Date(Date.now() + this.browserTtlSeconds * 1000),
       lastEventId: null,
     });
-    await this.ai.createRun(candidate);
+    try {
+      await this.ai.createRun(candidate);
+    } catch (error) {
+      if (!(error instanceof AiBrowserBusyError)) throw error;
+      const activeRun = error.activeRunId
+        ? await this.store.findRun(error.activeRunId)
+        : null;
+      if (
+        activeRun &&
+        activeRun.userId === userId &&
+        !TERMINAL_RUN_STATES.has(activeRun.status)
+      ) {
+        throw new ContractException(
+          'ACTIVE_RUN_EXISTS',
+          409,
+          'You already have an unfinished shopping run',
+          [
+            {
+              field: 'runId',
+              code: 'ACTIVE_RUN',
+              message: activeRun.id,
+            },
+          ],
+        );
+      }
+      throw new ContractException(
+        'BROWSER_BUSY',
+        429,
+        `The shopping browser is busy; try again in ${error.retryAfterSeconds} seconds`,
+      );
+    }
     const run = await this.store.createRun(candidate);
     await this.recordEvent(run, 'run.created', {
       requestedCategory: run.requestedCategory,
@@ -512,6 +543,73 @@ export class ShoppingService implements OnModuleDestroy {
     return this.viewerTokens.authorize(token);
   }
 
+  async uploadEvidence(
+    runId: string,
+    evidenceId: string,
+    file:
+      | { buffer: Buffer; mimetype: string; originalname: string; size: number }
+      | undefined,
+  ) {
+    if (!file || file.mimetype !== 'image/png' || !isPng(file.buffer))
+      throw new ContractException(
+        'VALIDATION_ERROR',
+        400,
+        'Evidence must be a PNG screenshot',
+      );
+    if (!evidenceId || evidenceId.length > 128)
+      throw new ContractException(
+        'VALIDATION_ERROR',
+        400,
+        'Evidence ID is invalid',
+      );
+    const run = await this.store.findRun(runId);
+    if (!run)
+      throw new ContractException(
+        'RUN_NOT_FOUND',
+        404,
+        'Shopping run not found',
+      );
+    const existing = await this.store.findEvidence(evidenceId);
+    if (existing && existing.runId !== runId)
+      throw new ContractException(
+        'EVENT_ID_CONFLICT',
+        409,
+        'Evidence ID belongs to another run',
+      );
+    const content = Buffer.from(file.buffer);
+    const saved = await this.store.saveEvidence({
+      ...(existing ?? {}),
+      id: evidenceId,
+      runId,
+      kind: existing?.kind ?? 'screenshot',
+      uri: this.evidenceUri(runId, evidenceId),
+      sha256: createHash('sha256').update(content).digest('hex'),
+      contentType: 'image/png',
+      content,
+      capturedAt: existing?.capturedAt ?? new Date(),
+      merchantAttemptId: existing?.merchantAttemptId ?? null,
+      redacted: true,
+    });
+    return { accepted: true, evidenceId: saved.id, sha256: saved.sha256 };
+  }
+
+  async evidence(userId: string, runId: string, evidenceId: string) {
+    await this.getOwnedRun(userId, runId);
+    const evidence = await this.store.findEvidence(evidenceId);
+    if (
+      !evidence ||
+      evidence.runId !== runId ||
+      !evidence.content ||
+      evidence.contentType !== 'image/png'
+    )
+      throw new ContractException(
+        'EVIDENCE_NOT_FOUND',
+        404,
+        'Screenshot evidence was not found',
+      );
+    return { content: evidence.content, contentType: evidence.contentType };
+  }
+
   async resolveSecret(dto: ResolveSecretDto) {
     const run = await this.store.findRun(dto.runId);
     if (!run || TERMINAL_RUN_STATES.has(run.status))
@@ -720,8 +818,22 @@ export class ShoppingService implements OnModuleDestroy {
   }
 
   private async applyAiEvent(run: ShoppingRun, dto: AiEventDto): Promise<void> {
+    const previousStatus = run.status;
     run.status = dto.status;
     run.lastEventId = dto.id;
+    if (
+      dto.type === 'run.status_changed' &&
+      dto.status === ShoppingRunState.Paused &&
+      previousStatus !== ShoppingRunState.Paused
+    ) {
+      run.resumeStatus = previousStatus;
+    } else if (
+      dto.type === 'run.status_changed' &&
+      previousStatus === ShoppingRunState.Paused &&
+      dto.status !== ShoppingRunState.Paused
+    ) {
+      run.resumeStatus = null;
+    }
     switch (dto.type) {
       case 'run.clarification_required':
         run.pendingAction = {
@@ -796,20 +908,34 @@ export class ShoppingService implements OnModuleDestroy {
         await this.store.saveMerchantAttempt(attempt);
         break;
       }
-      case 'evidence.captured':
+      case 'evidence.captured': {
+        const evidenceId = String(dto.payload.evidenceId);
+        const uploaded = await this.store.findEvidence(evidenceId);
+        if (uploaded && uploaded.runId !== run.id)
+          throw new ContractException(
+            'EVENT_ID_CONFLICT',
+            409,
+            'Evidence ID belongs to another run',
+          );
         await this.store.saveEvidence({
-          id: String(dto.payload.evidenceId),
+          ...(uploaded ?? {}),
+          id: evidenceId,
           runId: run.id,
           kind: String(dto.payload.kind),
-          uri: `${this.publicOrigin}/api/v1/shopping/runs/${encodeURIComponent(run.id)}/report#${encodeURIComponent(String(dto.payload.evidenceId))}`,
-          sha256: createHash('sha256')
-            .update(`${run.id}:${String(dto.payload.evidenceId)}`)
-            .digest('hex'),
+          uri: this.evidenceUri(run.id, evidenceId),
+          sha256:
+            uploaded?.sha256 ??
+            createHash('sha256')
+              .update(`${run.id}:${evidenceId}`)
+              .digest('hex'),
+          contentType: uploaded?.contentType ?? null,
+          content: uploaded?.content ?? null,
           capturedAt: new Date(dto.timestamp),
           merchantAttemptId: dto.payload.merchantAttemptId as string | null,
           redacted: true,
         });
         break;
+      }
       case 'offer.recorded': {
         const data = await this.store.report(run.id);
         const attempt = data.merchantAttempts.find(
@@ -879,6 +1005,7 @@ export class ShoppingService implements OnModuleDestroy {
         break;
       }
       case 'run.failed':
+        run.resumeStatus = null;
         run.failure = {
           code: String(dto.payload.failureCode),
           message: 'The shopping run failed',
@@ -890,6 +1017,7 @@ export class ShoppingService implements OnModuleDestroy {
         break;
       case 'run.completed':
       case 'run.cancelled':
+        run.resumeStatus = null;
         run.completedAt = new Date(dto.timestamp);
         run.pendingAction = null;
         this.clearLeaseTimer(run.id);
@@ -1196,6 +1324,10 @@ export class ShoppingService implements OnModuleDestroy {
     this.leaseTimers.delete(runId);
   }
 
+  private evidenceUri(runId: string, evidenceId: string): string {
+    return `${this.publicOrigin}/api/v1/shopping/runs/${encodeURIComponent(runId)}/evidence/${encodeURIComponent(evidenceId)}`;
+  }
+
   private stale(): never {
     throw new ContractException(
       'STALE_ACTION_REQUEST',
@@ -1249,6 +1381,15 @@ function nonEmptyAnswer(value: string | string[] | undefined): boolean {
     : Array.isArray(value) &&
         value.length > 0 &&
         value.every((item) => item.trim().length > 0);
+}
+
+function isPng(content: Buffer): boolean {
+  return (
+    content.length >= 8 &&
+    content
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  );
 }
 
 function canonicalDomain(domain: string): boolean {

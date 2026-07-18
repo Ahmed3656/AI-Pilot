@@ -48,7 +48,7 @@ const TRANSITIONS: Readonly<
     S.Failed,
   ],
   [S.UserTakeover]: [S.ReadyForHandoff, S.Completed, S.Cancelled, S.Failed],
-  [S.Paused]: [S.Cancelled, S.Failed],
+  [S.Paused]: [S.UserTakeover, S.Cancelled, S.Failed],
   [S.Completed]: [],
   [S.Cancelled]: [],
   [S.Failed]: [],
@@ -63,7 +63,7 @@ export class RunStateMachine {
   ): void {
     if (from === to) return;
     const allowed =
-      from === S.Paused
+      from === S.Paused || from === S.UserTakeover
         ? resumeStatus === to || TRANSITIONS[from].includes(to)
         : TRANSITIONS[from].includes(to);
     if (!allowed) {

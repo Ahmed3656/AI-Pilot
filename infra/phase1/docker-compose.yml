@@ -183,7 +183,10 @@ services:
       - control-plane
       - agent-egress
     healthcheck:
-      test: ['CMD-SHELL', '/opt/bin/check-grid.sh --host 0.0.0.0 --port 4444']
+      # Selenium's own `ready` flag becomes false while its single slot is in
+      # use. The service is still healthy (and its VNC stream is live), so the
+      # container check must test the status endpoint rather than slot capacity.
+      test: ['CMD-SHELL', 'wget -q --spider http://127.0.0.1:4444/status']
       interval: 10s
       timeout: 10s
       retries: 12

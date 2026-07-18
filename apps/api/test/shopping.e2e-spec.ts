@@ -35,6 +35,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
     body: Record<string, unknown>;
   }> = [];
   let failNextCommand = false;
+  let busyWithRunId: string | null = null;
 
   beforeAll(async () => {
     fakeAi = createServer((req, res) => {
@@ -45,6 +46,27 @@ describe('DealPilot canonical API contract (e2e)', () => {
           Buffer.concat(chunks).toString('utf8'),
         ) as Record<string, unknown>;
         aiRequests.push({ path: req.url ?? '', headers: req.headers, body });
+        if (req.url === '/internal/v1/runs' && busyWithRunId) {
+          res.writeHead(429, {
+            'content-type': 'application/json',
+            'retry-after': '2',
+          });
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'RATE_LIMITED',
+                details: [
+                  {
+                    field: 'runId',
+                    code: 'ACTIVE_RUN',
+                    message: busyWithRunId,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
         if (failNextCommand && /\/commands$/.test(req.url ?? '')) {
           failNextCommand = false;
           res.writeHead(409, { 'content-type': 'application/json' });
@@ -52,6 +74,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
             JSON.stringify({ error: { code: 'INVALID_RUN_TRANSITION' } }),
           );
           return;
+        }
+        if (body.name === 'cancel' && body.runId === busyWithRunId) {
+          busyWithRunId = null;
         }
         res.writeHead(202, { 'content-type': 'application/json' });
         if (req.url === '/internal/v1/runs') {
@@ -259,6 +284,69 @@ describe('DealPilot canonical API contract (e2e)', () => {
         ['id', 'issuedAt', 'name', 'payload', 'runId'].sort(),
       );
     });
+  });
+
+  it('lets the owner cancel an active session and start a replacement without leaking its ID', async () => {
+    const active = await createRun(
+      'retail',
+      'Keep this shopping session active',
+      'en-EG',
+    );
+    const activeRunId = active.run.id as string;
+    busyWithRunId = activeRunId;
+
+    const replacementRequest = {
+      category: 'retail',
+      query: 'Start a different shopping session',
+      locale: 'en-EG',
+    };
+    const conflict = await api()
+      .post('/api/v1/shopping/runs')
+      .set('Idempotency-Key', idem('active-run-conflict'))
+      .send(replacementRequest)
+      .expect(409);
+    expect(conflict.body.error).toMatchObject({
+      code: 'ACTIVE_RUN_EXISTS',
+      details: [
+        {
+          field: 'runId',
+          code: 'ACTIVE_RUN',
+          message: activeRunId,
+        },
+      ],
+    });
+
+    const otherUserBusy = await request(app.getHttpServer())
+      .post('/api/v1/shopping/runs')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .set('Idempotency-Key', idem('other-user-active-run'))
+      .send(replacementRequest)
+      .expect(429);
+    expect(otherUserBusy.body.error).toMatchObject({
+      code: 'BROWSER_BUSY',
+      details: [],
+    });
+    expect(JSON.stringify(otherUserBusy.body)).not.toContain(activeRunId);
+
+    await api()
+      .post(`/api/v1/shopping/runs/${activeRunId}/control`)
+      .set('Idempotency-Key', idem('replace-active-run'))
+      .send({ action: 'cancel', reason: 'replaced_by_new_run' })
+      .expect(200)
+      .expect(({ body }) => expect(body.run.status).toBe('cancelled'));
+    expect(busyWithRunId).toBeNull();
+
+    await api()
+      .post('/api/v1/shopping/runs')
+      .set('Idempotency-Key', idem('replacement-run'))
+      .send(replacementRequest)
+      .expect(201)
+      .expect(({ body }) =>
+        expect(body.run).toMatchObject({
+          query: replacementRequest.query,
+          status: 'discovering',
+        }),
+      );
   });
 
   it('supports auto classification, canonical clarification, and 24-hour idempotency behavior', async () => {
@@ -482,6 +570,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
       mode: 'view',
       viewerUrl: 'https://dealpilot.test/viewer/',
     });
+    expect(String(view.headers['set-cookie']?.[0] ?? '')).toContain(
+      'dealpilot_viewer=',
+    );
     expect(view.body.viewerUrl).not.toContain(view.body.token);
 
     const claimed = await api()
@@ -554,6 +645,47 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('X-Internal-Token', INTERNAL_TOKEN)
       .set('Authorization', `Bearer ${control.body.token}`)
       .expect(401);
+  });
+
+  it('resumes an AI-originated safety pause from its previous run state', async () => {
+    const created = await createRun('retail', 'Find a phone safely', 'en-EG');
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'safety-pause-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('safety-pause-domain'))
+      .send({
+        requestId: 'safety-pause-domain',
+        domains: ['amazon.eg'],
+      })
+      .expect(200);
+    await postEvent(runId, 'paused', 'run.status_changed', {
+      from: 'comparing',
+      to: 'paused',
+      reasonCode: 'browser_warning',
+    });
+
+    const paused = await api()
+      .get(`/api/v1/shopping/runs/${runId}`)
+      .expect(200);
+    expect(paused.body.run).toMatchObject({
+      status: 'paused',
+      resumeStatus: 'comparing',
+    });
+
+    const resumed = await api()
+      .post(`/api/v1/shopping/runs/${runId}/control`)
+      .set('Idempotency-Key', idem('safety-pause-resume'))
+      .send({ action: 'resume' })
+      .expect(200);
+    expect(resumed.body.run).toMatchObject({
+      status: 'comparing',
+      resumeStatus: null,
+    });
+    expect(aiRequests.at(-1)?.body).toMatchObject({
+      name: 'resume',
+      payload: { reason: 'user' },
+    });
   });
 
   it('builds an evidence-linked comparison report and excludes invalid EGP arithmetic from ranking', async () => {
@@ -673,12 +805,26 @@ describe('DealPilot canonical API contract (e2e)', () => {
     const attemptId = 'attempt:identifier-longer-than-twenty-six-characters';
     const evidenceId = 'evidence:identifier-longer-than-twenty-six-characters';
     const offerId = 'offer:identifier-longer-than-twenty-six-characters';
+    const screenshot = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02, 0x03,
+    ]);
     await postEvent(runId, 'comparing', 'merchant.attempt_started', {
       attemptId,
       merchantId: 'amazon-eg',
       merchantDomain: 'amazon.eg',
       category: 'retail',
     });
+    const uploaded = await request(app.getHttpServer())
+      .post(
+        `/internal/v1/evidence/${encodeURIComponent(runId)}/${encodeURIComponent(evidenceId)}`,
+      )
+      .set('X-Internal-Token', INTERNAL_TOKEN)
+      .attach('file', screenshot, {
+        filename: 'screenshot.png',
+        contentType: 'image/png',
+      })
+      .expect(201);
+    expect(uploaded.body).toMatchObject({ accepted: true, evidenceId });
     await postEvent(runId, 'comparing', 'evidence.captured', {
       evidenceId,
       kind: 'screenshot',
@@ -715,8 +861,20 @@ describe('DealPilot canonical API contract (e2e)', () => {
       }),
     ]);
     expect(report.body.evidence).toEqual([
-      expect.objectContaining({ id: evidenceId, redacted: true }),
+      expect.objectContaining({
+        id: evidenceId,
+        redacted: true,
+        sha256: uploaded.body.sha256,
+        uri: `https://dealpilot.test/api/v1/shopping/runs/${runId}/evidence/${encodeURIComponent(evidenceId)}`,
+      }),
     ]);
+    const downloaded = await api()
+      .get(
+        `/api/v1/shopping/runs/${runId}/evidence/${encodeURIComponent(evidenceId)}`,
+      )
+      .expect('Content-Type', /image\/png/)
+      .expect(200);
+    expect(Buffer.from(downloaded.body)).toEqual(screenshot);
   });
 
   function api() {

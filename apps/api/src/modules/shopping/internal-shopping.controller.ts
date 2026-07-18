@@ -4,12 +4,16 @@ import {
   Headers,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Res,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
 import { ApiHeader, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { Public } from '../../core/decorators/public.decorator';
 import { ContractException } from '../../core/filters/contract-exception';
@@ -29,6 +33,24 @@ export class InternalShoppingController {
   @HttpCode(HttpStatus.ACCEPTED)
   aiEvent(@Body() dto: AiEventDto) {
     return this.shopping.receiveAiEvent(dto);
+  }
+
+  @Post('evidence/:runId/:evidenceId')
+  @HttpCode(HttpStatus.CREATED)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { files: 1, fileSize: 3 * 1024 * 1024 },
+    }),
+  )
+  uploadEvidence(
+    @Param('runId') runId: string,
+    @Param('evidenceId') evidenceId: string,
+    @UploadedFile()
+    file:
+      | { buffer: Buffer; mimetype: string; originalname: string; size: number }
+      | undefined,
+  ) {
+    return this.shopping.uploadEvidence(runId, evidenceId, file);
   }
 
   @Post('secrets/resolve')

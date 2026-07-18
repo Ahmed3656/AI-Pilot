@@ -1,3 +1,4 @@
+import { isAxiosError } from 'axios';
 import { apiClient } from '@/api/client';
 import { environment } from '@/config/environment';
 import {
@@ -21,6 +22,32 @@ import {
 } from './types';
 
 const RUNS_PATH = '/shopping/runs';
+
+interface ContractErrorResponse {
+  error?: {
+    code?: string;
+    details?: Array<{
+      field?: string | null;
+      code?: string;
+      message?: string;
+    }>;
+  };
+}
+
+export class ActiveShoppingRunError extends Error {
+  constructor(readonly runId: string) {
+    super('ACTIVE_RUN_EXISTS');
+    this.name = 'ActiveShoppingRunError';
+  }
+}
+
+export class ShoppingBrowserBusyError extends Error {
+  constructor() {
+    super('BROWSER_BUSY');
+    this.name = 'ShoppingBrowserBusyError';
+  }
+}
+
 const EVENT_TYPES: EventType[] = [
   'run.created',
   'run.clarification_required',
@@ -113,13 +140,40 @@ function unwrapRun(data: { run: unknown }): RunResource {
   return normalizeRunResource(data.run);
 }
 
+function apiContractError(error: unknown): ContractErrorResponse | null {
+  if (!isAxiosError<ContractErrorResponse>(error)) return null;
+  const data = error.response?.data;
+  return data && typeof data === 'object' ? data : null;
+}
+
 export async function createShoppingRun(
   request: CreateShoppingRunRequest,
 ): Promise<RunResource> {
-  const { data } = await apiClient.post<{ run: unknown }>(RUNS_PATH, request, {
-    headers: mutationHeaders(),
-  });
-  return unwrapRun(data);
+  try {
+    const { data } = await apiClient.post<{ run: unknown }>(
+      RUNS_PATH,
+      request,
+      {
+        headers: mutationHeaders(),
+      },
+    );
+    return unwrapRun(data);
+  } catch (error) {
+    const contract = apiContractError(error);
+    if (contract?.error?.code === 'ACTIVE_RUN_EXISTS') {
+      const runId = contract.error.details?.find(
+        (detail) => detail.field === 'runId' && detail.code === 'ACTIVE_RUN',
+      )?.message;
+      if (runId) throw new ActiveShoppingRunError(runId);
+    }
+    if (
+      contract?.error?.code === 'BROWSER_BUSY' ||
+      contract?.error?.code === 'RATE_LIMITED'
+    ) {
+      throw new ShoppingBrowserBusyError();
+    }
+    throw error;
+  }
 }
 
 export async function getShoppingRun(runId: string): Promise<RunResource> {
@@ -250,6 +304,24 @@ export async function sendRunAction(
     { headers: mutationHeaders() },
   );
   return unwrapRun(data);
+}
+
+export async function replaceActiveShoppingRun(
+  activeRunId: string,
+  request: CreateShoppingRunRequest,
+): Promise<RunResource> {
+  try {
+    await sendRunAction(activeRunId, 'cancel', 'replaced_by_new_run');
+  } catch (cancelError) {
+    const current = await getShoppingRun(activeRunId).catch(() => null);
+    if (
+      !current ||
+      !['completed', 'cancelled', 'failed'].includes(current.status)
+    ) {
+      throw cancelError;
+    }
+  }
+  return createShoppingRun(request);
 }
 
 export async function claimControl(

@@ -72,6 +72,7 @@ const en = {
   authNameRequired: 'Enter your name.',
   authFailed: 'Those details did not work. Check them and try again.',
   authUnavailable: 'Authentication is unavailable right now. Try again soon.',
+  authSessionExpired: 'Your session expired. Sign in again to continue.',
   needAccount: 'New to DealPilot?',
   haveAccount: 'Already have an account?',
   signOut: 'Sign out',
@@ -89,6 +90,17 @@ const en = {
   hideDetails: 'Hide preferences',
   sendRequest: 'Send request',
   startFailed: 'Could not start this run. Check the connection and try again.',
+  shoppingBrowserBusy:
+    'Another shopping run is using the browser. Try again in a few seconds.',
+  activeRunTitle: 'You already have a running session',
+  activeRunBody:
+    'Continue the current session, or cancel it and start this new request.',
+  continueActiveRun: 'Continue current session',
+  cancelAndStartRun: 'Cancel it and start new',
+  replacingRun: 'Closing and starting\u2026',
+  keepActiveRun: 'Not now',
+  replaceRunFailed:
+    'The current run could not be replaced. It is still safe to continue it and try again.',
   exampleRetail:
     'Find a Samsung A55 256 GB under 25,000 EGP, delivered by Thursday',
   exampleFood:
@@ -167,6 +179,8 @@ const en = {
   warnings: 'Warnings',
   partialResults: 'Partial results',
   screenshots: 'Screenshots',
+  openScreenshot: 'Open screenshot',
+  openScreenshotHint: 'Shows this screenshot at full-screen size.',
   approvals: 'Your approval is needed',
   clarificationRequired: 'DealPilot needs clarification',
   submitAnswers: 'Submit answers',
@@ -318,6 +332,7 @@ const ar: Record<keyof typeof en, string> = {
   authNameRequired: 'أدخل اسمك.',
   authFailed: 'تعذر استخدام هذه البيانات. راجعها وحاول مرة أخرى.',
   authUnavailable: 'خدمة تسجيل الدخول غير متاحة الآن. حاول لاحقاً.',
+  authSessionExpired: 'انتهت صلاحية جلستك. سجّل الدخول مرة أخرى للمتابعة.',
   needAccount: 'جديد في ديل بايلوت؟',
   haveAccount: 'لديك حساب بالفعل؟',
   signOut: 'تسجيل الخروج',
@@ -334,6 +349,17 @@ const ar: Record<keyof typeof en, string> = {
   hideDetails: 'إخفاء التفضيلات',
   sendRequest: 'إرسال الطلب',
   startFailed: 'تعذر بدء المهمة. تحقق من الاتصال وحاول مرة أخرى.',
+  shoppingBrowserBusy:
+    'تستخدم مهمة تسوق أخرى المتصفح الآن. حاول مرة أخرى بعد بضع ثوانٍ.',
+  activeRunTitle: 'لديك جلسة قيد التشغيل بالفعل',
+  activeRunBody:
+    'يمكنك متابعة الجلسة الحالية، أو إلغاءها وبدء هذا الطلب الجديد.',
+  continueActiveRun: 'متابعة الجلسة الحالية',
+  cancelAndStartRun: 'إلغاؤها وبدء طلب جديد',
+  replacingRun: 'جارٍ الإغلاق والبدء…',
+  keepActiveRun: 'ليس الآن',
+  replaceRunFailed:
+    'تعذر استبدال المهمة الحالية. لا يزال بإمكانك متابعتها والمحاولة مرة أخرى بأمان.',
   exampleRetail:
     'ابحث عن Samsung A55 سعة ٢٥٦ جيجابايت بأقل من ٢٥٬٠٠٠ EGP والتوصيل قبل الخميس',
   exampleFood: 'اطلب بيتزا ببروني كبيرة في المعادي بتقييم +٤٫٣ وأقل من ٤٥٠ EGP',
@@ -411,6 +437,8 @@ const ar: Record<keyof typeof en, string> = {
   warnings: 'تحذيرات',
   partialResults: 'نتائج جزئية',
   screenshots: 'لقطات الشاشة',
+  openScreenshot: 'فتح لقطة الشاشة',
+  openScreenshotHint: 'يعرض لقطة الشاشة بحجم ملء الشاشة.',
   approvals: 'موافقتك مطلوبة',
   clarificationRequired: 'يحتاج ديل بايلوت إلى توضيح',
   submitAnswers: 'إرسال الإجابات',

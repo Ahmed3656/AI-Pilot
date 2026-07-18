@@ -174,23 +174,24 @@ Every mutating request requires an `Idempotency-Key` header containing 8-128 pri
 
 ### 4.1 Endpoint list and status behavior
 
-| Method and path                                | Success | Request                      | Response                                    | State precondition                              |
-| ---------------------------------------------- | ------- | ---------------------------- | ------------------------------------------- | ----------------------------------------------- |
-| `POST /shopping/runs`                          | `201`   | `CreateRunRequest`           | `{ run: RunResource }`                      | none                                            |
-| `GET /shopping/runs/:runId`                    | `200`   | none                         | `{ run: RunResource }`                      | run exists                                      |
-| `GET /shopping/merchants?category=...`         | `200`   | concrete category optional   | `{ merchants: Merchant[] }`                 | none                                            |
-| `POST /shopping/runs/:runId/clarifications`    | `200`   | `SubmitClarificationRequest` | `{ run: RunResource }`                      | `clarifying` and current request ID             |
-| `POST /shopping/runs/:runId/domains/approve`   | `200`   | `ApproveDomainsRequest`      | `ApprovalResponse`                          | `awaiting_domain_approval`                      |
-| `POST /shopping/runs/:runId/address-grant`     | `200`   | `AddressGrantRequest`        | `ApprovalResponse`                          | `awaiting_address_consent`                      |
-| `POST /shopping/runs/:runId/seat-hold/approve` | `200`   | `SeatHoldApprovalRequest`    | `ApprovalResponse`                          | `awaiting_seat_hold_approval`                   |
-| `POST /shopping/runs/:runId/control`           | `200`   | `RunControlRequest`          | `{ run: RunResource }`                      | action-specific                                 |
-| `POST /shopping/runs/:runId/control/claim`     | `200`   | `ClaimControlRequest`        | `{ run: RunResource; lease: ControlLease }` | `ready_for_handoff`                             |
-| `POST /shopping/runs/:runId/control/renew`     | `200`   | `{ leaseId: string }`        | `{ lease: ControlLease }`                   | active lease held by caller                     |
-| `POST /shopping/runs/:runId/control/release`   | `200`   | `{ leaseId: string }`        | `{ run: RunResource; lease: ControlLease }` | active/recovering lease held by caller          |
-| `POST /shopping/runs/:runId/viewer-tokens`     | `201`   | `CreateViewerTokenRequest`   | `ViewerTokenResponse`                       | nonterminal; control also requires active lease |
-| `GET /shopping/runs/:runId/events`             | `200`   | history query                | `EventHistoryResponse`                      | run exists                                      |
-| `WS /shopping/runs/:runId/events`              | `101`   | WebSocket upgrade            | `EventEnvelope` frames                      | valid viewer token                              |
-| `GET /shopping/runs/:runId/report`             | `200`   | none                         | `RunReport`                                 | run exists                                      |
+| Method and path                                  | Success | Request                      | Response                                    | State precondition                              |
+| ------------------------------------------------ | ------- | ---------------------------- | ------------------------------------------- | ----------------------------------------------- |
+| `POST /shopping/runs`                            | `201`   | `CreateRunRequest`           | `{ run: RunResource }`                      | none                                            |
+| `GET /shopping/runs/:runId`                      | `200`   | none                         | `{ run: RunResource }`                      | run exists                                      |
+| `GET /shopping/merchants?category=...`           | `200`   | concrete category optional   | `{ merchants: Merchant[] }`                 | none                                            |
+| `POST /shopping/runs/:runId/clarifications`      | `200`   | `SubmitClarificationRequest` | `{ run: RunResource }`                      | `clarifying` and current request ID             |
+| `POST /shopping/runs/:runId/domains/approve`     | `200`   | `ApproveDomainsRequest`      | `ApprovalResponse`                          | `awaiting_domain_approval`                      |
+| `POST /shopping/runs/:runId/address-grant`       | `200`   | `AddressGrantRequest`        | `ApprovalResponse`                          | `awaiting_address_consent`                      |
+| `POST /shopping/runs/:runId/seat-hold/approve`   | `200`   | `SeatHoldApprovalRequest`    | `ApprovalResponse`                          | `awaiting_seat_hold_approval`                   |
+| `POST /shopping/runs/:runId/control`             | `200`   | `RunControlRequest`          | `{ run: RunResource }`                      | action-specific                                 |
+| `POST /shopping/runs/:runId/control/claim`       | `200`   | `ClaimControlRequest`        | `{ run: RunResource; lease: ControlLease }` | `ready_for_handoff`                             |
+| `POST /shopping/runs/:runId/control/renew`       | `200`   | `{ leaseId: string }`        | `{ lease: ControlLease }`                   | active lease held by caller                     |
+| `POST /shopping/runs/:runId/control/release`     | `200`   | `{ leaseId: string }`        | `{ run: RunResource; lease: ControlLease }` | active/recovering lease held by caller          |
+| `POST /shopping/runs/:runId/viewer-tokens`       | `201`   | `CreateViewerTokenRequest`   | `ViewerTokenResponse`                       | nonterminal; control also requires active lease |
+| `GET /shopping/runs/:runId/events`               | `200`   | history query                | `EventHistoryResponse`                      | run exists                                      |
+| `WS /shopping/runs/:runId/events`                | `101`   | WebSocket upgrade            | `EventEnvelope` frames                      | valid viewer token                              |
+| `GET /shopping/runs/:runId/report`               | `200`   | none                         | `RunReport`                                 | run exists                                      |
+| `GET /shopping/runs/:runId/evidence/:evidenceId` | `200`   | none                         | redacted `image/png`                        | run ownership and persisted evidence            |
 
 Ownership mismatch returns `404 RUN_NOT_FOUND`, not a run-existence oracle. A stale pending-action `requestId` returns `409 STALE_ACTION_REQUEST`. Viewer token creation is a side effect and therefore uses `POST`, never `GET`.
 
@@ -505,6 +506,8 @@ Internal routes are network-private and use `X-Internal-Token` over the app netw
 | AI → API    | `POST /internal/v1/secrets/resolve`      | `200`   |
 | Caddy → API | `POST /internal/v1/viewer/authorize`     | `200`   |
 
+Redacted PNG evidence is uploaded with multipart field `file` to `POST /internal/v1/evidence/:runId/:evidenceId`, which returns `201` after persisting the screenshot.
+
 Internal run creation:
 
 ```ts
@@ -746,6 +749,9 @@ interface EvidenceReference {
   merchantAttemptId: string | null;
   redacted: true;
 }
+
+// Screenshot URIs serve persisted redacted image/png bytes through the
+// authenticated public API. Report and event payloads never contain the bytes.
 
 interface RunReport {
   id: string;

@@ -100,6 +100,9 @@ def test_first_retail_merchant_reuses_initial_browser_tab() -> None:
             self.get_calls.append(url)
             self.current_url = url
 
+        def execute_script(self, _: str) -> bool:
+            return False
+
         @property
         def page_source(self) -> str:
             return "<main>Egyptian retailer</main>"
@@ -140,6 +143,9 @@ def test_next_approved_navigation_reuses_a_tab_left_on_denied_redirect() -> None
         def get(self, url: str) -> None:
             self.get_calls.append(url)
             self.current_url = url
+
+        def execute_script(self, _: str) -> bool:
+            return False
 
         @property
         def page_source(self) -> str:
@@ -248,6 +254,23 @@ def test_homepage_script_with_card_field_copy_does_not_look_like_checkout() -> N
         '<script>window.messages = {"card number": "Card number is invalid"}</script>',
         "https://www.amazon.eg/",
     )
+
+
+def test_hidden_homepage_card_control_does_not_look_like_checkout() -> None:
+    inspect_page_for_pause(
+        '<input aria-label="Card number" style="display: none">',
+        "https://www.amazon.eg/",
+    )
+
+
+def test_visible_card_control_pauses_even_outside_checkout_path() -> None:
+    with pytest.raises(PauseRequired) as pause:
+        inspect_page_for_pause(
+            '<input aria-label="Card number">',
+            "https://www.amazon.eg/",
+            visible_sensitive_control=True,
+        )
+    assert pause.value.reason_code is PauseReason.BROWSER_WARNING
 
 
 def test_checkout_path_with_payment_copy_still_pauses() -> None:

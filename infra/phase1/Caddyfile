@@ -31,6 +31,8 @@
 				header_up X-Forwarded-Method {method}
 				header_up X-Forwarded-Uri {uri}
 				header_up X-Internal-Token {$INTERNAL_TOKEN}
+				header_up -Connection
+				header_up -Upgrade
 
 				@authorized status 2xx
 				handle_response @authorized {
@@ -45,10 +47,10 @@
 				path /viewer /viewer/
 				header X-DealPilot-Viewer-Mode view
 			}
-			redir @view_root /viewer/vnc.html?autoconnect=1&resize=scale&view_only=1&path=viewer/websockify 302
+			redir @view_root /viewer/vnc.html?autoconnect=1&resize=scale&view_only=1&path=/viewer/websockify 302
 
 			@control_root path /viewer /viewer/
-			redir @control_root /viewer/vnc.html?autoconnect=1&resize=scale&path=viewer/websockify 302
+			redir @control_root /viewer/vnc.html?autoconnect=1&resize=scale&path=/viewer/websockify 302
 
 			uri strip_prefix /viewer
 			reverse_proxy {$CADDY_VIEWER_UPSTREAM} {

@@ -82,6 +82,25 @@ return {
 };
 """
 
+_VISIBLE_SENSITIVE_PAYMENT_CONTROL = """
+const markers = [
+  'card number', 'credit card', 'debit card', 'cvv', 'cvc',
+  'expiry', 'expiration', 'wallet number', 'رقم البطاقة', 'رمز الأمان'
+];
+return Array.from(document.querySelectorAll('input, textarea, select')).some((el) => {
+  const style = window.getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  if (el.hidden || style.display === 'none' || style.visibility === 'hidden' ||
+      Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) return false;
+  const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+  const metadata = [
+    el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('aria-label'),
+    el.getAttribute('placeholder'), el.getAttribute('title')
+  ].filter(Boolean).join(' ').toLowerCase();
+  return autocomplete.startsWith('cc-') || markers.some((marker) => metadata.includes(marker));
+});
+"""
+
 _MASK_PAGE = """
 window.__dealpilotRedactions = [];
 const secrets = arguments[0].filter(Boolean).sort((a, b) => b.length - a.length);
@@ -157,6 +176,8 @@ class EventSink(Protocol):
         *,
         status: RunStatus | None = None,
     ) -> None: ...
+
+    async def upload_evidence(self, run_id: str, evidence_id: str, png: bytes) -> None: ...
 
 
 ApprovalRequester = Callable[[ApprovalType, dict[str, Any]], Awaitable[bool]]
@@ -327,7 +348,14 @@ class SeleniumRemoteBrowser:
                     expected_domain=self.expected_domain,
                     approved_domains=approved,
                 )
-            inspect_page_for_pause(self.driver.page_source, self.driver.current_url)
+            visible_sensitive_control = bool(
+                self.driver.execute_script(_VISIBLE_SENSITIVE_PAYMENT_CONTROL)
+            )
+            inspect_page_for_pause(
+                self.driver.page_source,
+                self.driver.current_url,
+                visible_sensitive_control=visible_sensitive_control,
+            )
             self._safe_urls[handle] = self.driver.current_url
             self.tabs.setdefault(domain, handle)
         if origin in self.driver.window_handles:
@@ -602,6 +630,9 @@ class BrowserActionExecutor:
         attempt_id = self.merchant_attempt_getter()
         if attempt_id:
             self.evidence_by_attempt.setdefault(attempt_id, []).append(evidence_id)
+        upload_evidence = getattr(self.event_sink, "upload_evidence", None)
+        if upload_evidence is not None:
+            await upload_evidence(self.run_id, evidence_id, png)
         await self.event_sink.emit(
             self.run_id,
             "evidence.captured",

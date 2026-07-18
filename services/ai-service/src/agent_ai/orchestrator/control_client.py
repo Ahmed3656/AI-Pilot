@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -121,6 +122,27 @@ class ControlAPIClient:
         if not isinstance(value, str) or not value:
             raise RuntimeError("Secret resolver returned no value")
         return value
+
+    async def upload_evidence(self, run_id: str, evidence_id: str, png: bytes) -> None:
+        response: httpx.Response | None = None
+        path = (
+            f"{self.base_url}/internal/v1/evidence/"
+            f"{quote(run_id, safe='')}/{quote(evidence_id, safe='')}"
+        )
+        for attempt in range(5):
+            response = await self.client.post(
+                path,
+                headers=self._headers,
+                files={"file": ("screenshot.png", png, "image/png")},
+            )
+            if response.status_code not in {404, 409, 502, 503}:
+                break
+            await asyncio.sleep(0.05 * (2**attempt))
+        assert response is not None
+        if response.is_error:
+            raise RuntimeError(
+                f"Control API rejected screenshot evidence with HTTP {response.status_code}"
+            )
 
     async def aclose(self) -> None:
         if self._owns_client:

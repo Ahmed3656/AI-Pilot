@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { StyleSheet, Text, View } from 'react-native';
 import { AppButton, Card } from '@/components';
 import { useToast } from '@/components/Toast';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -18,6 +17,7 @@ import {
   ViewerTokenResponse,
 } from '../types';
 import { SectionHeading } from './ShoppingControls';
+import { BrowserViewer } from './BrowserViewer';
 
 function noVncUrl(uri: string, viewOnly: boolean): string {
   const url = new URL(uri);
@@ -190,30 +190,14 @@ export function RemoteBrowser({
           {t(hasControl ? 'controlActive' : 'viewOnly')}
         </Text>
       </View>
-      {activeUrl && viewer && Platform.OS !== 'web' ? (
-        <View
-          pointerEvents={hasControl ? 'auto' : 'none'}
-          style={[styles.viewerFrame, { borderColor: theme.colors.border }]}
-        >
-          <WebView
-            allowsInlineMediaPlayback
-            javaScriptEnabled
-            setSupportMultipleWindows={false}
-            onShouldStartLoadWithRequest={(request) => {
-              try {
-                return new URL(request.url).origin === viewerOrigin;
-              } catch {
-                return false;
-              }
-            }}
-            originWhitelist={viewerOrigin ? [`${viewerOrigin}/*`] : []}
-            source={{
-              uri: activeUrl,
-              headers: { Authorization: `${viewer.tokenType} ${viewer.token}` },
-            }}
-            style={styles.viewer}
-          />
-        </View>
+      {activeUrl && viewer && viewerOrigin ? (
+        <BrowserViewer
+          borderColor={theme.colors.border}
+          interactive={hasControl}
+          token={`${viewer.tokenType} ${viewer.token}`}
+          uri={activeUrl}
+          viewerOrigin={viewerOrigin}
+        />
       ) : (
         <View
           style={[
@@ -276,13 +260,6 @@ export function RemoteBrowser({
 const styles = StyleSheet.create({
   mode: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9 },
   modeText: { fontSize: 13, fontWeight: '900' },
-  viewerFrame: {
-    height: 380,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderRadius: 12,
-  },
-  viewer: { flex: 1, backgroundColor: '#101828' },
   placeholder: {
     minHeight: 160,
     borderRadius: 12,

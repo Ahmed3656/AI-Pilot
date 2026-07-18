@@ -254,7 +254,12 @@ def is_seat_hold_element(metadata: dict[str, Any]) -> bool:
     return has_seat_word and is_selector
 
 
-def inspect_page_for_pause(page_text: str, current_url: str) -> None:
+def inspect_page_for_pause(
+    page_text: str,
+    current_url: str,
+    *,
+    visible_sensitive_control: bool = False,
+) -> None:
     folded = " ".join(page_text.casefold().split())
     path = urlsplit(current_url).path.casefold()
     if current_url.startswith(("chrome-error://", "chrome://interstitial", "about:certerror")):
@@ -279,8 +284,9 @@ def inspect_page_for_pause(page_text: str, current_url: str) -> None:
             for marker in _SENSITIVE_CARD_PAGE_MARKERS
         )
     )
-    if sensitive_control or (
-        payment_path and any(marker in folded for marker in _SENSITIVE_CARD_PAGE_MARKERS)
+    if visible_sensitive_control or (
+        payment_path
+        and (sensitive_control or any(marker in folded for marker in _SENSITIVE_CARD_PAGE_MARKERS))
     ):
         raise PauseRequired(
             PauseReason.BROWSER_WARNING,

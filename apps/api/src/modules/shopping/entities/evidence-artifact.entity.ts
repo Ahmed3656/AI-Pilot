@@ -21,6 +21,12 @@ export class EvidenceArtifact extends BaseEntity {
   @Column({ type: 'varchar', length: 64 })
   sha256!: string;
 
+  @Column({ name: 'content_type', type: 'varchar', length: 40, nullable: true })
+  contentType!: string | null;
+
+  @Column({ type: 'bytea', nullable: true, select: false })
+  content!: Buffer | null;
+
   @Column({ name: 'captured_at', type: 'timestamptz' })
   capturedAt!: Date;
 
