@@ -12,6 +12,7 @@ from agent_ai.browser.selenium_remote import (
     BrowserActionExecutor,
     SecretRedactor,
     SeleniumRemoteBrowser,
+    VisualFallbackRequired,
 )
 from agent_ai.models import ApprovalType, Category, PauseReason, RunStatus
 
@@ -101,6 +102,7 @@ def test_remote_browser_uses_the_coordinate_contract_viewport() -> None:
     def factory(*, command_executor: str, options: Any) -> Driver:
         captured["command_executor"] = command_executor
         captured["arguments"] = options.arguments
+        captured["page_load_strategy"] = options.page_load_strategy
         return Driver()
 
     browser = SeleniumRemoteBrowser("http://browser:4444/wd/hub", driver_factory=factory)
@@ -109,6 +111,7 @@ def test_remote_browser_uses_the_coordinate_contract_viewport() -> None:
     assert captured == {
         "command_executor": "http://browser:4444/wd/hub",
         "arguments": ["--disable-notifications", "--window-size=1280,800"],
+        "page_load_strategy": "eager",
         "window_size": (1280, 800),
     }
 
@@ -196,6 +199,117 @@ async def test_capture_pauses_and_returns_last_safe_screenshot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_initial_captcha_pause_captures_fresh_page_after_human_resume() -> None:
+    class InitialCaptchaBrowser(FakeBrowser):
+        def __init__(self) -> None:
+            super().__init__({"tag": "button", "text": "Continue"})
+            self.solved = False
+            self.recoveries = 0
+
+        def guard(self, category: Category, approved_domains: set[str]) -> None:
+            super().guard(category, approved_domains)
+            if not self.solved:
+                raise PauseRequired(
+                    PauseReason.CAPTCHA,
+                    "CAPTCHA/human verification detected",
+                    preserve_page=True,
+                )
+
+        def recover_last_safe(self, category: Category, approved_domains: set[str]) -> None:
+            self.recoveries += 1
+            super().recover_last_safe(category, approved_domains)
+
+    browser = InitialCaptchaBrowser()
+    pauses: list[PauseRequired] = []
+
+    async def pause(exc: PauseRequired) -> None:
+        pauses.append(exc)
+        browser.solved = True
+
+    events = FakeEventSink()
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=events,
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+        pause_requester=pause,
+    )
+
+    screenshot = await executor.capture()
+
+    assert screenshot.startswith("data:image/png;base64,")
+    assert len(events.uploads) == 1
+    assert browser.recoveries == 0
+    assert pauses[0].preserve_page is True
+
+
+@pytest.mark.asyncio
+async def test_unchanged_screenshot_reuses_evidence_without_duplicate_upload() -> None:
+    browser = FakeBrowser({"name": "search", "aria_label": "Search"})
+    events = FakeEventSink()
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=events,
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+        merchant_attempt_getter=lambda: "attempt-1",
+    )
+
+    first = await executor.capture()
+    second = await executor.capture()
+
+    assert second == first
+    assert len(events.uploads) == 1
+    assert len(executor.evidence_ids) == 1
+    assert executor.evidence_by_attempt == {"attempt-1": executor.evidence_ids}
+
+
+@pytest.mark.asyncio
+async def test_page_text_returns_only_visible_approved_domain_links() -> None:
+    class LinkBrowser(FakeBrowser):
+        def visible_text(self, max_chars: int) -> dict[str, Any]:
+            assert max_chars == 20_000
+            return {
+                "url": "https://www.amazon.eg/search?q=mouse",
+                "title": "Results",
+                "text": "Logitech M171",
+                "truncated": False,
+                "links": [
+                    {
+                        "label": "Logitech M171",
+                        "url": "https://www.amazon.eg/logitech-m171/dp/example?q=mouse",
+                    },
+                    {"label": "External", "url": "https://example.com/tracker"},
+                ],
+            }
+
+    executor = BrowserActionExecutor(
+        LinkBrowser({"name": "search", "aria_label": "Search"}),  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+    )
+
+    page = await executor.read_page_text()
+
+    assert page["links"] == [
+        {
+            "label": "Logitech M171",
+            "url": "https://www.amazon.eg/logitech-m171/dp/example?q=mouse",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_payment_click_is_blocked_before_selenium_action() -> None:
     browser = FakeBrowser({"tag": "button", "text": "Place order"})
     executor = BrowserActionExecutor(
@@ -210,6 +324,96 @@ async def test_payment_click_is_blocked_before_selenium_action() -> None:
     with pytest.raises(SafetyViolation, match="final"):
         await executor.execute({"type": "click", "x": 10, "y": 20})
     assert browser.clicks == []
+
+
+@pytest.mark.asyncio
+async def test_changed_click_target_requests_visual_retry_before_clicking() -> None:
+    browser = FakeBrowser(
+        {
+            "tag": "button",
+            "text": "Open cart",
+            "interactive": True,
+            "disabled": False,
+        }
+    )
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+    )
+
+    with pytest.raises(VisualFallbackRequired, match="no longer match"):
+        await executor.execute({"type": "click", "x": 10, "y": 20, "target": "Continue to results"})
+
+    assert browser.clicks == []
+
+
+@pytest.mark.asyncio
+async def test_matching_click_target_ignores_generic_control_words() -> None:
+    browser = FakeBrowser(
+        {
+            "tag": "button",
+            "text": "Search",
+            "interactive": True,
+            "disabled": False,
+        }
+    )
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+    )
+
+    await executor.execute({"type": "click", "x": 10, "y": 20, "target": "Search button"})
+
+    assert browser.clicks == [(10, 20)]
+
+
+@pytest.mark.asyncio
+async def test_human_only_pause_preserves_current_page_for_takeover() -> None:
+    class RecoverTrackingBrowser(FakeBrowser):
+        def __init__(self) -> None:
+            super().__init__({"tag": "button", "text": "Verify"})
+            self.recoveries = 0
+
+        def recover_last_safe(self, category: Category, approved_domains: set[str]) -> None:
+            self.recoveries += 1
+            super().recover_last_safe(category, approved_domains)
+
+    browser = RecoverTrackingBrowser()
+    pauses: list[PauseRequired] = []
+
+    async def pause(exc: PauseRequired) -> None:
+        pauses.append(exc)
+
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"amazon.eg"},
+        pause_requester=pause,
+    )
+    await executor.pause_for_safety(
+        PauseRequired(
+            PauseReason.CAPTCHA,
+            "CAPTCHA/human verification detected",
+            preserve_page=True,
+        )
+    )
+
+    assert browser.recoveries == 0
+    assert pauses[0].preserve_page is True
 
 
 @pytest.mark.asyncio
@@ -236,6 +440,44 @@ async def test_blocked_action_pauses_and_keeps_last_safe_screenshot() -> None:
     assert await executor.execute({"type": "click", "x": 10, "y": 20}) == safe_screenshot
     assert browser.clicks == []
     assert [exc.reason_code for exc in pauses] == [PauseReason.BROWSER_WARNING]
+
+
+@pytest.mark.asyncio
+async def test_login_pause_preserves_authentication_handoff_page() -> None:
+    class LoginGateBrowser(FakeBrowser):
+        def __init__(self) -> None:
+            super().__init__({"tag": "input", "aria_label": "Email or Mobile Number"})
+            self.recovered = False
+
+        def recover_last_safe(self, category: Category, approved_domains: set[str]) -> None:
+            self.recovered = True
+
+    browser = LoginGateBrowser()
+    pauses: list[PauseRequired] = []
+
+    async def pause(exc: PauseRequired) -> None:
+        pauses.append(exc)
+
+    executor = BrowserActionExecutor(
+        browser,  # type: ignore[arg-type]
+        category=Category.RETAIL,
+        run_id="run-1",
+        event_sink=FakeEventSink(),
+        secret_resolver=FakeResolver(),
+        approval_requester=approve,
+        approved_domains={"jumia.com.eg"},
+        pause_requester=pause,
+    )
+    await executor.pause_for_safety(
+        PauseRequired(
+            PauseReason.LOGIN,
+            "Login must be completed by the user",
+            preserve_page=True,
+        )
+    )
+
+    assert browser.recovered is False
+    assert [exc.reason_code for exc in pauses] == [PauseReason.LOGIN]
 
 
 @pytest.mark.asyncio

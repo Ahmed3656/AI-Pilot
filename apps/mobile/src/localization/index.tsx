@@ -104,7 +104,7 @@ const en = {
   exampleRetail:
     'Find a Samsung A55 256 GB under 25,000 EGP, delivered by Thursday',
   exampleFood:
-    'Order a large pepperoni pizza in Maadi, rated 4.3+, under 450 EGP',
+    'Find the closest 4.3+ restaurant in Maadi with a large pepperoni pizza under 450 EGP',
   exampleCinema:
     'Find two adjacent VOX seats for an English movie Friday after 7 pm',
   fieldProduct: 'Product',
@@ -230,6 +230,8 @@ const en = {
   reportSubtitle:
     'Totals are compared only when every required charge was verified.',
   lowestVerified: 'Lowest verified total among checked options',
+  menuPriceOnly: 'Menu price only',
+  deliveredTotal: 'Delivered total',
   noVerifiedTotal: 'No checked option has a fully verified total yet.',
   reportInProgress: 'The comparison report is still being verified.',
   merchantProgress: 'Merchant progress',
@@ -362,7 +364,8 @@ const ar: Record<keyof typeof en, string> = {
     'تعذر استبدال المهمة الحالية. لا يزال بإمكانك متابعتها والمحاولة مرة أخرى بأمان.',
   exampleRetail:
     'ابحث عن Samsung A55 سعة ٢٥٦ جيجابايت بأقل من ٢٥٬٠٠٠ EGP والتوصيل قبل الخميس',
-  exampleFood: 'اطلب بيتزا ببروني كبيرة في المعادي بتقييم +٤٫٣ وأقل من ٤٥٠ EGP',
+  exampleFood:
+    'ابحث عن أقرب مطعم في المعادي بتقييم +٤٫٣ وبيتزا ببروني كبيرة بأقل من ٤٥٠ EGP',
   exampleCinema:
     'ابحث عن مقعدين متجاورين في VOX لفيلم إنجليزي الجمعة بعد ٧ مساءً',
   fieldProduct: 'المنتج',
@@ -486,6 +489,8 @@ const ar: Record<keyof typeof en, string> = {
   reportTitle: 'الخيارات المفحوصة',
   reportSubtitle: 'تُقارن الإجماليات فقط بعد التحقق من كل الرسوم المطلوبة.',
   lowestVerified: 'أقل إجمالي موثّق بين الخيارات المفحوصة',
+  menuPriceOnly: 'سعر المنيو فقط',
+  deliveredTotal: 'الإجمالي مع التوصيل',
   noVerifiedTotal: 'لا يوجد بعد خيار مفحوص بإجمالي موثّق بالكامل.',
   reportInProgress: 'لا يزال تقرير المقارنة قيد التحقق.',
   merchantProgress: 'تقدم التجار',

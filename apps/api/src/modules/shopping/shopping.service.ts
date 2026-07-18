@@ -51,6 +51,7 @@ export class ShoppingService implements OnModuleDestroy {
   private readonly leaseTtlSeconds: number;
   private readonly publicOrigin: string;
   private readonly leaseTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingRunOwners = new Map<string, string>();
 
   constructor(
     @Inject(SHOPPING_STORE) private readonly store: ShoppingStore,
@@ -120,38 +121,14 @@ export class ShoppingService implements OnModuleDestroy {
       browserExpiresAt: new Date(Date.now() + this.browserTtlSeconds * 1000),
       lastEventId: null,
     });
+    this.pendingRunOwners.set(candidate.id, userId);
+    let run: ShoppingRun;
     try {
-      await this.ai.createRun(candidate);
-    } catch (error) {
-      if (!(error instanceof AiBrowserBusyError)) throw error;
-      const activeRun = error.activeRunId
-        ? await this.store.findRun(error.activeRunId)
-        : null;
-      if (
-        activeRun &&
-        activeRun.userId === userId &&
-        !TERMINAL_RUN_STATES.has(activeRun.status)
-      ) {
-        throw new ContractException(
-          'ACTIVE_RUN_EXISTS',
-          409,
-          'You already have an unfinished shopping run',
-          [
-            {
-              field: 'runId',
-              code: 'ACTIVE_RUN',
-              message: activeRun.id,
-            },
-          ],
-        );
-      }
-      throw new ContractException(
-        'BROWSER_BUSY',
-        429,
-        `The shopping browser is busy; try again in ${error.retryAfterSeconds} seconds`,
-      );
+      await this.createAiRun(candidate, userId);
+      run = await this.store.createRun(candidate);
+    } finally {
+      this.pendingRunOwners.delete(candidate.id);
     }
-    const run = await this.store.createRun(candidate);
     await this.recordEvent(run, 'run.created', {
       requestedCategory: run.requestedCategory,
       category: run.category,
@@ -164,6 +141,82 @@ export class ShoppingService implements OnModuleDestroy {
       });
     }
     return { run: this.runView(run) };
+  }
+
+  private async createAiRun(
+    candidate: ShoppingRun,
+    userId: string,
+  ): Promise<void> {
+    try {
+      await this.ai.createRun(candidate);
+      return;
+    } catch (error) {
+      if (!(error instanceof AiBrowserBusyError)) throw error;
+      await this.recoverOrTranslateBrowserBusy(error, candidate, userId);
+    }
+  }
+
+  private async recoverOrTranslateBrowserBusy(
+    error: AiBrowserBusyError,
+    candidate: ShoppingRun,
+    userId: string,
+  ): Promise<void> {
+    const activeRunId = error.activeRunId;
+    const activeRun = activeRunId
+      ? await this.store.findRun(activeRunId)
+      : null;
+    if (
+      activeRun &&
+      activeRun.userId === userId &&
+      !TERMINAL_RUN_STATES.has(activeRun.status)
+    ) {
+      throw new ContractException(
+        'ACTIVE_RUN_EXISTS',
+        409,
+        'You already have an unfinished shopping run',
+        [
+          {
+            field: 'runId',
+            code: 'ACTIVE_RUN',
+            message: activeRun.id,
+          },
+        ],
+      );
+    }
+
+    const pendingOwner = activeRunId
+      ? this.pendingRunOwners.get(activeRunId)
+      : undefined;
+    if (activeRun && !TERMINAL_RUN_STATES.has(activeRun.status)) {
+      this.browserBusy(error);
+    }
+    if (pendingOwner !== undefined) {
+      this.browserBusy(error);
+    }
+    if (!activeRunId) {
+      this.browserBusy(error);
+    }
+
+    // The AI process can survive an API restart or a failed persistence step.
+    // If its active ID is absent from the authoritative API store (or already
+    // terminal there), no user can resume or cancel it through the public API.
+    // Close that orphan and retry this admission once.
+    try {
+      await this.ai.cancelOrphanRun(activeRunId);
+      await this.ai.createRun(candidate);
+    } catch (recoveryError) {
+      if (recoveryError instanceof AiBrowserBusyError)
+        this.browserBusy(recoveryError);
+      this.browserBusy(error);
+    }
+  }
+
+  private browserBusy(error: AiBrowserBusyError): never {
+    throw new ContractException(
+      'BROWSER_BUSY',
+      429,
+      `The shopping browser is busy; try again in ${error.retryAfterSeconds} seconds`,
+    );
   }
 
   merchants(category?: ShoppingCategory) {
@@ -1353,7 +1406,7 @@ function classify(query: string): ShoppingCategory | null {
     ],
     [
       ShoppingCategory.Food,
-      /\b(food|meal|restaurant|pizza|burger|delivery|talabat)\b|طعام|أكل|مطعم|بيتزا|وجبة/iu,
+      /\b(food|meal|restaurant|pizzas?|burgers?|delivery|talabat|elmenus|menu egypt|google maps|koshar[yi]s?|shaw(?:a|e)rmas?)\b|طعام|أكل|مطعم|بيتزا|وجبة|كشري|كشرى|شاورما/iu,
     ],
     [
       ShoppingCategory.Retail,

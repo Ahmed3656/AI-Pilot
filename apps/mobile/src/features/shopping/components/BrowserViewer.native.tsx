@@ -24,15 +24,20 @@ export function BrowserViewer({
       <WebView
         allowsInlineMediaPlayback
         javaScriptEnabled
+        sharedCookiesEnabled
+        thirdPartyCookiesEnabled
         setSupportMultipleWindows={false}
         onShouldStartLoadWithRequest={(request) => {
+          if (request.url === 'about:blank') return true;
           try {
             return new URL(request.url).origin === viewerOrigin;
           } catch {
             return false;
           }
         }}
-        originWhitelist={[`${viewerOrigin}/*`]}
+        // originWhitelist is matched against the origin only, not the full
+        // URL. Adding /* here prevents every viewer navigation on iOS/Android.
+        originWhitelist={[viewerOrigin]}
         source={{
           uri,
           headers: { Authorization: token },

@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     port: int = 8000
     log_level: str = "INFO"
     model: str = "openai/gpt-5.2"
+    vision_fallback_provider: Literal["openrouter", "gemini"] = "openrouter"
+    vision_fallback_model: str = ""
     openrouter_api_key: str = ""
+    gemini_api_key: str = ""
+    gemini_vision_model: str = "gemini-3-flash-preview"
     selenium_remote_url: str = "http://browser:4444/wd/hub"
     control_api_url: str = "http://api:3000"
     internal_token: str = ""
@@ -28,7 +32,9 @@ class Settings(BaseSettings):
         validation_alias="RUN_BROWSER_TTL_SECONDS",
     )
     max_computer_steps: int = Field(default=80, ge=1, le=200)
+    max_visual_retries: int = Field(default=3, ge=1, le=10)
     request_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
+    reap_orphaned_browser_sessions: bool = False
 
 
 @lru_cache

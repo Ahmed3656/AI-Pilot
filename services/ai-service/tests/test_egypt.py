@@ -36,6 +36,11 @@ def test_normalizes_digits_labels_and_named_areas_without_address_invention() ->
     ("query", "category"),
     [
         ("عايز وجبة برجر من طلبات", Category.FOOD),
+        ("Find it on Menu Egypt or elmenus", Category.FOOD),
+        ("Find koshary near me", Category.FOOD),
+        ("Compare burgers close to me", Category.FOOD),
+        ("Show shawerma menu prices", Category.FOOD),
+        ("Find pizza nearby", Category.FOOD),
         ("Book a VOX cinema movie tonight", Category.CINEMA),
         ("اشتري موبايل من جوميا", Category.RETAIL),
     ],

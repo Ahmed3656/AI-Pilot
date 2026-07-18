@@ -147,7 +147,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
     });
 
     const catalog = await api().get('/api/v1/shopping/merchants').expect(200);
-    expect(catalog.body.merchants).toHaveLength(5);
+    expect(catalog.body.merchants).toHaveLength(8);
     expect(catalog.body.merchants).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -157,6 +157,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
           currency: 'EGP',
         }),
         expect.objectContaining({ domain: 'talabat.com', category: 'food' }),
+        expect.objectContaining({ domain: 'google.com', category: 'food' }),
+        expect.objectContaining({ domain: 'menuegypt.com', category: 'food' }),
+        expect.objectContaining({ domain: 'elmenus.com', category: 'food' }),
         expect.objectContaining({
           domain: 'voxcinemas.com',
           category: 'cinema',
@@ -349,6 +352,34 @@ describe('DealPilot canonical API contract (e2e)', () => {
       );
   });
 
+  it('closes an orphaned AI browser session and retries after the API reconnects', async () => {
+    const orphanedRunId = '01JORPHANEDRUN000000000000';
+    busyWithRunId = orphanedRunId;
+    const before = aiRequests.length;
+
+    const created = await createRun(
+      'retail',
+      'Recover after a disconnected session',
+      'en-EG',
+    );
+
+    expect(created.run).toMatchObject({
+      query: 'Recover after a disconnected session',
+      status: 'discovering',
+    });
+    expect(busyWithRunId).toBeNull();
+    expect(aiRequests.slice(before).map((entry) => entry.path)).toEqual([
+      '/internal/v1/runs',
+      `/internal/v1/runs/${orphanedRunId}/commands`,
+      '/internal/v1/runs',
+    ]);
+    expect(aiRequests.at(-2)?.body).toMatchObject({
+      runId: orphanedRunId,
+      name: 'cancel',
+      payload: { reason: 'orphaned_control_session' },
+    });
+  });
+
   it('supports auto classification, canonical clarification, and 24-hour idempotency behavior', async () => {
     const automatic = await createRun(
       'auto',
@@ -360,6 +391,20 @@ describe('DealPilot canonical API contract (e2e)', () => {
       category: 'cinema',
       status: 'discovering',
     });
+
+    for (const query of [
+      'Find koshary near me',
+      'Compare burgers close to me',
+      'Show shawerma menu prices',
+      'Find pizza nearby',
+    ]) {
+      const food = await createRun('auto', query, 'en-EG');
+      expect(food.run).toMatchObject({
+        requestedCategory: 'auto',
+        category: 'food',
+        status: 'discovering',
+      });
+    }
 
     const key = idem('clarify-create');
     const body = {

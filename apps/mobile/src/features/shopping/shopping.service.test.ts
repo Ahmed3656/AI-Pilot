@@ -305,6 +305,38 @@ describe('canonical shopping service', () => {
     );
   });
 
+  it('aligns a local development viewer with the API host used by the website', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        token: 'viewer-secret',
+        tokenType: 'Bearer',
+        mode: 'view',
+        viewerUrl: 'http://192.168.1.9:8080/viewer/',
+        expiresAt: run.browserExpiresAt,
+      },
+    });
+
+    await expect(createViewerToken(run.id, 'view')).resolves.toMatchObject({
+      viewerUrl: 'http://localhost:8080/viewer/',
+    });
+  });
+
+  it('does not align an untrusted viewer origin in development', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        token: 'viewer-secret',
+        tokenType: 'Bearer',
+        mode: 'view',
+        viewerUrl: 'https://attacker.example/viewer/',
+        expiresAt: run.browserExpiresAt,
+      },
+    });
+
+    await expect(createViewerToken(run.id, 'view')).rejects.toThrow(
+      'INVALID_VIEWER_TOKEN_RESPONSE',
+    );
+  });
+
   it('parses canonical event history and keeps viewer tokens out of WebSocket URLs', async () => {
     get.mockResolvedValueOnce({
       data: {

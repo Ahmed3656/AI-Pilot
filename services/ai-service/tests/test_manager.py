@@ -217,10 +217,11 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     )
     created = await manager.create_run(_request(), "run-1")
     assert created.duplicate is False
-    assert browser.connect_count == 1
+    assert browser.connect_count == 0
     session_id = browser.session_id
     await manager.start("run-1")
     await _wait_for_status(manager, "run-1", RunStatus.AWAITING_DOMAIN_APPROVAL)
+    assert browser.connect_count == 1
     record = manager.get_record("run-1")
     domain_event = next(
         payload
@@ -248,7 +249,7 @@ async def test_browser_identity_survives_full_handoff_control_and_resume_lifecyc
     )
     await _wait_for_status(manager, "run-1", RunStatus.READY_FOR_HANDOFF)
 
-    assert browser.urls == ["https://www.amazon.eg/"]
+    assert browser.urls == ["https://www.amazon.eg/s?k=Find+an+exact+phone"]
     assert browser.closed is False
     assert browser.session_id == session_id
     assert record.agent.last_response_id == "response-chain-1"

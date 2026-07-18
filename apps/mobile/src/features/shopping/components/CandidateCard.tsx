@@ -5,7 +5,10 @@ import { useLocalization } from '@/localization';
 import { formatEGP } from '../currency';
 import { OfferReport } from '../types';
 
-function offerDetails(offer: OfferReport): string[] {
+function offerDetails(
+  offer: OfferReport,
+  foodPriceLabels: { menu: string; delivered: string },
+): string[] {
   switch (offer.details.kind) {
     case 'retail':
       return [
@@ -24,6 +27,18 @@ function offerDetails(offer: OfferReport): string[] {
         offer.details.size,
         ...offer.details.modifiers,
         offer.details.rating === null ? null : `★ ${offer.details.rating}`,
+        offer.details.branchArea,
+        offer.details.distanceText ??
+          (offer.details.distanceKm === null ||
+          offer.details.distanceKm === undefined
+            ? null
+            : `${offer.details.distanceKm} km`),
+        offer.details.sourceName,
+        offer.details.priceScope === 'menu_price'
+          ? foodPriceLabels.menu
+          : offer.details.priceScope === 'delivered_total'
+            ? foodPriceLabels.delivered
+            : null,
         offer.details.deliveryEstimate,
       ].filter((value): value is string => Boolean(value));
     case 'cinema':
@@ -81,7 +96,10 @@ export function CandidateCard({
               { color: theme.colors.muted },
             ]}
           >
-            {offerDetails(offer).join(' · ')}
+            {offerDetails(offer, {
+              menu: t('menuPriceOnly'),
+              delivered: t('deliveredTotal'),
+            }).join(' · ')}
           </Text>
         </View>
         {isWinner ? (

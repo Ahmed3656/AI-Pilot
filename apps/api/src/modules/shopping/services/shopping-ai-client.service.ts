@@ -82,6 +82,11 @@ export class ShoppingAiClientService {
     return id;
   }
 
+  async cancelOrphanRun(runId: string): Promise<void> {
+    const run = Object.assign(new ShoppingRun(), { id: runId });
+    await this.command(run, 'cancel', { reason: 'orphaned_control_session' });
+  }
+
   private async request<T>(
     path: string,
     idempotencyKey: string,

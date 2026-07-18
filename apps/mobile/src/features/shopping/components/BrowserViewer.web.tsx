@@ -11,6 +11,7 @@ interface BrowserViewerProps {
 export function BrowserViewer({
   borderColor,
   interactive,
+  token,
   uri,
 }: BrowserViewerProps) {
   const style: CSSProperties = {
@@ -26,6 +27,8 @@ export function BrowserViewer({
   return (
     <iframe
       allow="clipboard-read; clipboard-write"
+      key={token}
+      loading="eager"
       src={uri}
       style={style}
       title="DealPilot remote browser"

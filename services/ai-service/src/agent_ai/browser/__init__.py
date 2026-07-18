@@ -10,6 +10,7 @@ from agent_ai.browser.selenium_remote import (
     BrowserActionExecutor,
     SecretRedactor,
     SeleniumRemoteBrowser,
+    VisualFallbackRequired,
 )
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "SafetyViolation",
     "SecretRedactor",
     "SeleniumRemoteBrowser",
+    "VisualFallbackRequired",
     "assert_allowed_url",
 ]

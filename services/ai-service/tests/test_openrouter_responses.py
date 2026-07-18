@@ -7,9 +7,12 @@ from typing import Any
 
 import pytest
 
+from agent_ai.browser.safety import PauseRequired
+from agent_ai.browser.selenium_remote import VisualFallbackRequired
 from agent_ai.models import Category
 from agent_ai.providers import openrouter_responses
 from agent_ai.providers.openrouter_responses import OpenRouterComputerAgent
+from agent_ai.vision import VisualTarget
 
 
 class FakeResponses:
@@ -58,7 +61,7 @@ class FakeExecutor:
 
 
 @pytest.mark.asyncio
-async def test_openrouter_uses_stateless_history_and_standard_function_tools() -> None:
+async def test_openrouter_uses_bounded_stateless_history_and_standard_function_tools() -> None:
     responses = FakeResponses()
     executor = FakeExecutor()
     agent = OpenRouterComputerAgent(
@@ -76,6 +79,7 @@ async def test_openrouter_uses_stateless_history_and_standard_function_tools() -
     assert responses.calls[0]["model"] == "openai/gpt-5.2"
     assert {tool["name"] for tool in responses.calls[0]["tools"]} == {
         "dealpilot_computer",
+        "dealpilot_page_text",
         "record_dealpilot_discovery",
     }
     assert {tool["type"] for tool in responses.calls[0]["tools"]} == {"function"}
@@ -83,10 +87,16 @@ async def test_openrouter_uses_stateless_history_and_standard_function_tools() -
     assert responses.calls[0]["input"][0]["content"][1]["detail"] == "original"
     assert "{{secret:street}}" in responses.calls[0]["input"][0]["content"][0]["text"]
     assert executor.actions == [{"type": "screenshot"}]
+    computer_tool = next(
+        tool for tool in responses.calls[0]["tools"] if tool["name"] == "dealpilot_computer"
+    )
+    assert "target" in computer_tool["parameters"]["properties"]["actions"]["items"]["properties"]
 
     continuation = responses.calls[1]
     assert "previous_response_id" not in continuation
-    assert continuation["input"][0] == responses.calls[0]["input"][0]
+    assert continuation["input"][0]["content"] == [
+        responses.calls[0]["input"][0]["content"][0]
+    ]
     assert continuation["input"][1]["name"] == "dealpilot_computer"
     assert continuation["input"][2]["type"] == "function_call_output"
     assert json.loads(continuation["input"][2]["output"]) == {
@@ -94,7 +104,267 @@ async def test_openrouter_uses_stateless_history_and_standard_function_tools() -
         "actionCount": 1,
     }
     assert continuation["input"][3]["content"][1]["image_url"].endswith("YWZ0ZXI=")
+    assert sum(
+        part.get("type") == "input_image"
+        for item in continuation["input"]
+        for part in item.get("content", [])
+        if isinstance(item, dict)
+    ) == 1
     assert agent.last_response_id == "response-2"
+
+
+@pytest.mark.asyncio
+async def test_only_latest_frame_is_sent_when_model_returns_multiple_computer_calls() -> None:
+    class MultipleComputerResponses:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return SimpleNamespace(
+                    id="response-many-1",
+                    output=[
+                        {
+                            "type": "function_call",
+                            "name": "dealpilot_computer",
+                            "call_id": "call-many-1",
+                            "arguments": json.dumps({"actions": [{"type": "screenshot"}]}),
+                        },
+                        {
+                            "type": "function_call",
+                            "name": "dealpilot_computer",
+                            "call_id": "call-many-2",
+                            "arguments": json.dumps({"actions": [{"type": "screenshot"}]}),
+                        },
+                    ],
+                    output_text="",
+                )
+            return SimpleNamespace(
+                id="response-many-2",
+                output=[],
+                output_text='{"candidates": []}',
+            )
+
+    class ChangingExecutor(FakeExecutor):
+        async def execute(self, action: dict[str, Any]) -> str:
+            self.actions.append(action)
+            return f"data:image/png;base64,frame-{len(self.actions)}"
+
+    responses = MultipleComputerResponses()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=responses),
+    )
+    await agent.run(
+        query="Find a phone",
+        category=Category.RETAIL,
+        executor=ChangingExecutor(),  # type: ignore[arg-type]
+    )
+
+    continuation = responses.calls[1]["input"]
+    images = [
+        part["image_url"]
+        for item in continuation
+        for part in item.get("content", [])
+        if isinstance(item, dict) and part.get("type") == "input_image"
+    ]
+    assert images == ["data:image/png;base64,frame-2"]
+
+
+@pytest.mark.asyncio
+async def test_changed_button_uses_visual_retry_then_human_takeover() -> None:
+    class NotFoundVisionLocator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def locate(self, **_: Any) -> None:
+            self.calls += 1
+            return None
+
+    class ChangedButtonExecutor(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pauses: list[PauseRequired] = []
+
+        async def execute(self, action: dict[str, Any]) -> str:
+            self.actions.append(action)
+            raise VisualFallbackRequired("The requested button moved")
+
+        async def pause_for_safety(self, exc: PauseRequired) -> None:
+            self.pauses.append(exc)
+
+    executor = ChangedButtonExecutor()
+    locator = NotFoundVisionLocator()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=FakeResponses()),
+        max_visual_retries=3,
+        vision_locator=locator,  # type: ignore[arg-type]
+    )
+    call = {
+        "id": "call-changed",
+        "arguments": json.dumps(
+            {"actions": [{"type": "click", "x": 100, "y": 200, "target": "Next"}]}
+        ),
+    }
+
+    first, first_screenshot = await agent._handle_computer_call(call, executor)  # type: ignore[arg-type]
+    second, _ = await agent._handle_computer_call(call, executor)  # type: ignore[arg-type]
+    third, third_screenshot = await agent._handle_computer_call(call, executor)  # type: ignore[arg-type]
+
+    assert first == {
+        "executed": False,
+        "actionCount": 0,
+        "fallback": "visual_retry",
+        "detectorAttempted": True,
+        "reason": "The requested button moved",
+    }
+    assert second["fallback"] == "visual_retry"
+    assert third["fallback"] == "human_takeover"
+    assert first_screenshot.endswith("aW5pdGlhbA==")
+    assert third_screenshot.endswith("aW5pdGlhbA==")
+    assert len(executor.pauses) == 1
+    assert executor.pauses[0].preserve_page is True
+    assert locator.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_secondary_vision_locator_recovers_changed_button_and_continues() -> None:
+    class RelocatedButtonExecutor(FakeExecutor):
+        async def execute(self, action: dict[str, Any]) -> str:
+            self.actions.append(action)
+            if action.get("x") == 100:
+                raise VisualFallbackRequired("The requested button moved")
+            return "data:image/png;base64,cmVjb3ZlcmVk"
+
+    class FoundVisionLocator:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def locate(self, **kwargs: Any) -> VisualTarget:
+            self.calls.append(kwargs)
+            return VisualTarget(x=420, y=315, label="Continue", confidence=0.93)
+
+    executor = RelocatedButtonExecutor()
+    locator = FoundVisionLocator()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=FakeResponses()),
+        vision_locator=locator,  # type: ignore[arg-type]
+    )
+    call = {
+        "id": "call-relocated",
+        "arguments": json.dumps(
+            {"actions": [{"type": "click", "x": 100, "y": 200, "target": "Next"}]}
+        ),
+    }
+
+    result, screenshot = await agent._handle_computer_call(call, executor)  # type: ignore[arg-type]
+
+    assert result == {
+        "executed": True,
+        "actionCount": 1,
+        "fallback": "vision_localizer",
+        "fallbackLabel": "Continue",
+        "fallbackConfidence": 0.93,
+    }
+    assert screenshot.endswith("cmVjb3ZlcmVk")
+    assert executor.actions == [
+        {"type": "click", "x": 100, "y": 200, "target": "Next"},
+        {"type": "click", "x": 420, "y": 315, "target": "Continue"},
+    ]
+    assert locator.calls[0]["intended_target"] == "Next"
+    assert locator.calls[0]["screenshot_url"].endswith("aW5pdGlhbA==")
+
+
+@pytest.mark.asyncio
+async def test_automation_step_limit_hands_control_to_human_without_failing() -> None:
+    class StepLimitExecutor(FakeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pauses: list[PauseRequired] = []
+
+        async def pause_for_safety(self, exc: PauseRequired) -> None:
+            self.pauses.append(exc)
+
+    executor = StepLimitExecutor()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=FakeResponses()),
+        max_steps=1,
+    )
+    call = {
+        "id": "call-step-limit",
+        "arguments": json.dumps({"actions": [{"type": "screenshot"}]}),
+    }
+
+    first, _ = await agent._handle_computer_call(call, executor)  # type: ignore[arg-type]
+    second, screenshot = await agent._handle_computer_call(call, executor)  # type: ignore[arg-type]
+
+    assert first == {"executed": True, "actionCount": 1}
+    assert second == {
+        "executed": False,
+        "actionCount": 0,
+        "fallback": "human_takeover",
+        "reason": "automation_step_limit",
+    }
+    assert screenshot.endswith("aW5pdGlhbA==")
+    assert len(executor.pauses) == 1
+    assert executor.pauses[0].preserve_page is True
+
+
+@pytest.mark.asyncio
+async def test_page_text_tool_returns_rendered_menu_data_to_the_model() -> None:
+    class PageTextResponses:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return SimpleNamespace(
+                    id="response-page-1",
+                    output=[
+                        {
+                            "type": "function_call",
+                            "name": "dealpilot_page_text",
+                            "call_id": "page-text-1",
+                            "arguments": "{}",
+                        }
+                    ],
+                    output_text="",
+                )
+            return SimpleNamespace(
+                id="response-page-2",
+                output=[],
+                output_text='{"candidates": []}',
+            )
+
+    class PageTextExecutor(FakeExecutor):
+        async def read_page_text(self) -> dict[str, Any]:
+            return {
+                "url": "https://www.menuegypt.com/menu/pizza",
+                "title": "Pizza menu",
+                "text": "Large pepperoni pizza 320 EGP",
+                "truncated": False,
+                "untrustedPageData": True,
+            }
+
+    responses = PageTextResponses()
+    agent = OpenRouterComputerAgent(
+        api_key="fake",
+        client=SimpleNamespace(responses=responses),
+    )
+    await agent.run(
+        query="Find pizza in Maadi",
+        category=Category.FOOD,
+        executor=PageTextExecutor(),  # type: ignore[arg-type]
+    )
+
+    output = json.loads(responses.calls[1]["input"][2]["output"])
+    assert output["text"] == "Large pepperoni pizza 320 EGP"
+    assert output["untrustedPageData"] is True
 
 
 def test_openrouter_client_uses_canonical_base_url(monkeypatch: pytest.MonkeyPatch) -> None:

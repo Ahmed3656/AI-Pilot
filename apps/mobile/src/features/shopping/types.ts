@@ -386,6 +386,13 @@ export interface FoodOfferDetails {
   minimumOrder: string | null;
   deliveryEstimate: string | null;
   optionalTipExcluded: true;
+  sourceName?: string;
+  branchArea?: string | null;
+  distanceKm?: number | null;
+  distanceText?: string | null;
+  proximityBasis?:
+    'route_distance' | 'same_area' | 'branch_area_only' | 'unknown';
+  priceScope?: 'menu_price' | 'delivered_total';
 }
 
 export interface CinemaOfferDetails {

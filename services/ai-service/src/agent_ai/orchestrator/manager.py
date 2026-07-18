@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+from urllib.parse import quote_plus
 from uuid import uuid4
 
 from agent_ai.browser import (
@@ -38,6 +39,7 @@ from agent_ai.schemas.runs import (
     InternalCreateRunRequest,
     InternalCreateRunResponse,
 )
+from agent_ai.vision import GeminiVisionFallbackLocator, VisionFallbackLocator
 from agent_ai.workflows import validate_agent_result
 
 logger = logging.getLogger("uvicorn.error")
@@ -136,14 +138,28 @@ _START_URLS: dict[Category, dict[str, str]] = {
         "jumia.com.eg": "https://www.jumia.com.eg/",
         "noon.com": "https://www.noon.com/egypt-en/",
     },
-    Category.FOOD: {"talabat.com": "https://www.talabat.com/egypt"},
+    Category.FOOD: {
+        "google.com": "https://www.google.com/maps/search/restaurants+in+Egypt",
+        "menuegypt.com": "https://www.menuegypt.com/menus/all",
+        "elmenus.com": "https://www.elmenus.com/menu",
+        "talabat.com": "https://www.talabat.com/egypt",
+    },
     Category.CINEMA: {"voxcinemas.com": "https://egy.voxcinemas.com/"},
+}
+
+_RETAIL_SEARCH_URLS = {
+    "amazon.eg": "https://www.amazon.eg/s?k={query}",
+    "jumia.com.eg": "https://www.jumia.com.eg/catalog/?q={query}",
+    "noon.com": "https://www.noon.com/egypt-en/search?q={query}",
 }
 
 _MERCHANT_NAMES = {
     "amazon.eg": "Amazon Egypt",
     "jumia.com.eg": "Jumia Egypt",
     "noon.com": "Noon Egypt",
+    "google.com": "Google Maps",
+    "menuegypt.com": "Menu Egypt",
+    "elmenus.com": "elmenus",
     "talabat.com": "Talabat Egypt",
     "voxcinemas.com": "VOX Egypt",
 }
@@ -151,6 +167,9 @@ _MERCHANT_IDS = {
     "amazon.eg": "amazon-eg",
     "jumia.com.eg": "jumia-eg",
     "noon.com": "noon-eg",
+    "google.com": "google-maps-eg",
+    "menuegypt.com": "menu-egypt",
+    "elmenus.com": "elmenus-eg",
     "talabat.com": "talabat-eg",
     "voxcinemas.com": "vox-eg",
 }
@@ -181,6 +200,14 @@ _COUPON_REJECTION_REASONS = {
     "technical_failure",
     "unknown",
 }
+
+
+def _merchant_start_url(record: RunRecord, domain: str) -> str:
+    assert record.category is not None
+    if record.category is not Category.RETAIL:
+        return _START_URLS[record.category][domain]
+    normalized_query = " ".join(record.request.query.split())[:300]
+    return _RETAIL_SEARCH_URLS[domain].format(query=quote_plus(normalized_query))
 
 
 class ScopedSecretResolver:
@@ -241,10 +268,22 @@ class RunManager:
             return DeterministicProviderTestAdapter()
         if not self.settings.openrouter_api_key:
             raise RuntimeError("AI_OPENROUTER_API_KEY is not configured")
+        vision_locator: VisionFallbackLocator | None = None
+        if self.settings.vision_fallback_provider == "gemini":
+            if not self.settings.gemini_api_key:
+                raise RuntimeError("AI_GEMINI_API_KEY is not configured")
+            vision_locator = GeminiVisionFallbackLocator(
+                api_key=self.settings.gemini_api_key,
+                model=self.settings.gemini_vision_model,
+                timeout_seconds=self.settings.request_timeout_seconds,
+            )
         return OpenRouterComputerAgent(
             api_key=self.settings.openrouter_api_key,
             model=self.settings.model,
             max_steps=self.settings.max_computer_steps,
+            max_visual_retries=self.settings.max_visual_retries,
+            vision_fallback_model=self.settings.vision_fallback_model or self.settings.model,
+            vision_locator=vision_locator,
             timeout_seconds=self.settings.request_timeout_seconds,
         )
 
@@ -274,11 +313,6 @@ class RunManager:
             status = RunStatus.DISCOVERING if category else RunStatus.CLARIFYING
             browser = self.browser_factory()
             agent = self.agent_factory()
-            try:
-                await asyncio.to_thread(browser.connect)
-            except Exception:
-                await asyncio.to_thread(browser.close)
-                raise
             record = RunRecord(
                 request=request,
                 category=category,
@@ -526,6 +560,11 @@ class RunManager:
 
     async def _execute(self, record: RunRecord) -> None:
         try:
+            # Admission must return before the comparatively slow Selenium
+            # session startup. The API persists the accepted run first; all
+            # browser work and any resulting failure are reported by this
+            # background task through canonical run events.
+            await asyncio.to_thread(record.browser.connect)
             await self._request_domains(record)
             await record.domains_event.wait()
             if record.status in TERMINAL_STATUSES:
@@ -705,7 +744,7 @@ class RunManager:
             try:
                 await asyncio.to_thread(
                     record.browser.navigate,
-                    _START_URLS[record.category][domain],
+                    _merchant_start_url(record, domain),
                     record.category,
                     record.approved_domains,
                     separate_tab=record.category is Category.RETAIL,

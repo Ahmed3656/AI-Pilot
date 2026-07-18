@@ -1442,7 +1442,20 @@
             ]
           },
           "deliveryEstimate": { "type": ["string", "null"] },
-          "optionalTipExcluded": { "const": true }
+          "optionalTipExcluded": { "const": true },
+          "sourceName": { "type": "string" },
+          "branchArea": { "type": ["string", "null"] },
+          "distanceKm": { "type": ["number", "null"], "minimum": 0 },
+          "distanceText": { "type": ["string", "null"] },
+          "proximityBasis": {
+            "enum": [
+              "route_distance",
+              "same_area",
+              "branch_area_only",
+              "unknown"
+            ]
+          },
+          "priceScope": { "enum": ["menu_price", "delivered_total"] }
         }
       },
       "CinemaOfferDetails": {

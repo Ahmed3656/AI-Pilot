@@ -30,8 +30,10 @@ def liveness() -> HealthResponse:
 @router.get("/ready", response_model=HealthResponse)
 def readiness(request: Request) -> HealthResponse:
     settings = request.app.state.settings
+    gemini_missing = settings.vision_fallback_provider == "gemini" and not settings.gemini_api_key
     if settings.environment == "production" and (
         not settings.openrouter_api_key
+        or gemini_missing
         or not settings.internal_token
         or not settings.control_api_url
         or not settings.selenium_remote_url

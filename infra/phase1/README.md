@@ -8,7 +8,7 @@ The stack runs PostgreSQL, a one-shot database migration gate, the NestJS API, t
 
 - Node.js 22 or newer and npm 10 or newer.
 - Docker Engine with Docker Compose 2.24 or newer.
-- An OpenRouter API key stored only in ignored `infra/phase1/.env`. Never commit it or paste it into logs, screenshots, reports, or viewer URLs.
+- An OpenRouter API key stored only in ignored `infra/phase1/.env`. A direct Gemini fallback additionally needs `AI_GEMINI_API_KEY` in the same ignored file. Never commit either key or paste it into logs, screenshots, reports, or viewer URLs.
 
 Run commands from the repository root. On the first lifecycle command, the runtime creates ignored `infra/phase1/.env` configuration with independent random PostgreSQL, JWT, internal, and viewer-token secrets. It never generates an OpenRouter key.
 

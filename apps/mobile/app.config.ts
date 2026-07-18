@@ -12,7 +12,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: ['expo-router', 'expo-secure-store'],
   experiments: { typedRoutes: true },
   web: { output: 'static' },
-  ios: { supportsTablet: true },
+  ios: {
+    supportsTablet: true,
+    infoPlist: {
+      NSAppTransportSecurity: { NSAllowsLocalNetworking: true },
+    },
+  },
   android: { edgeToEdgeEnabled: true },
   extra: {
     apiUrl:

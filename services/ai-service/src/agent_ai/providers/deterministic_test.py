@@ -36,9 +36,22 @@ class DeterministicProviderTestAdapter:
                 "stock": "available",
                 "seller_condition": "new",
                 "delivery_estimate": None,
+                "payment_info": {
+                    "observed_before_login": False,
+                    "methods": [],
+                    "installment_options": [],
+                    "discount_offers": [],
+                    "protection_plans": [],
+                    "shipping_and_fee_notes": [],
+                    "eligibility_notes": [],
+                    "login_required_for_final_terms": False,
+                    "evidence_ids": [],
+                },
             }
         elif category is Category.FOOD:
             details = {
+                "restaurant": "DealPilot Test Kitchen",
+                "meal": "Deterministic meal",
                 "meal_size": "test",
                 "required_modifiers": [],
                 "rating": None,
@@ -46,6 +59,12 @@ class DeterministicProviderTestAdapter:
                 "delivery_estimate": None,
                 "tip": "0.00",
                 "tip_excluded": True,
+                "source_name": "Deterministic fixture",
+                "branch_area": None,
+                "distance_km": None,
+                "distance_text": None,
+                "proximity_basis": "unknown",
+                "price_scope": "menu_price",
             }
         else:
             details = {

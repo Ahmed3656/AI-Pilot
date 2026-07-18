@@ -9,6 +9,7 @@ from agent_ai.browser.safety import (
     assert_allowed_url,
     assert_not_card_field,
     assert_not_final_action,
+    assert_not_login_field,
     inspect_page_for_pause,
 )
 from agent_ai.browser.selenium_remote import SeleniumRemoteBrowser
@@ -22,6 +23,11 @@ def test_allowed_subdomains_and_redirect_blocking() -> None:
     assert assert_allowed_url("https://egy.voxcinemas.com/show", Category.CINEMA) == (
         "voxcinemas.com"
     )
+    assert assert_allowed_url("https://www.google.com/maps", Category.FOOD) == "google.com"
+    assert assert_allowed_url("https://www.menuegypt.com/menus/all", Category.FOOD) == (
+        "menuegypt.com"
+    )
+    assert assert_allowed_url("https://www.elmenus.com/menu", Category.FOOD) == "elmenus.com"
     with pytest.raises(PauseRequired) as unexpected:
         assert_allowed_url("https://amazon.eg.attacker.example/", Category.RETAIL)
     assert unexpected.value.reason_code is PauseReason.UNEXPECTED_DOMAIN
@@ -48,6 +54,7 @@ def test_captcha_fixture_pauses_and_is_never_solved() -> None:
     with pytest.raises(PauseRequired) as pause:
         inspect_page_for_pause(html, "https://www.talabat.com/egypt")
     assert pause.value.reason_code is PauseReason.CAPTCHA
+    assert pause.value.preserve_page is True
 
 
 def test_denied_or_unapproved_navigation_never_calls_selenium_get() -> None:
@@ -280,3 +287,27 @@ def test_checkout_path_with_payment_copy_still_pauses() -> None:
             "https://www.amazon.eg/checkout/payment",
         )
     assert pause.value.reason_code is PauseReason.BROWSER_WARNING
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Enter mobile number or email",
+        "Email or Mobile Number*",
+        "Please enter email or mobile number",
+    ],
+)
+def test_live_retail_login_identifier_fields_pause(label: str) -> None:
+    with pytest.raises(PauseRequired) as pause:
+        assert_not_login_field({"tag": "input", "aria_label": label})
+    assert pause.value.reason_code is PauseReason.LOGIN
+
+
+def test_visible_identifier_only_login_dialog_pauses() -> None:
+    with pytest.raises(PauseRequired) as pause:
+        inspect_page_for_pause(
+            '<div role="dialog"><input aria-label="Email or Mobile Number"></div>',
+            "https://www.noon.com/egypt-en/cart/",
+            visible_login_control=True,
+        )
+    assert pause.value.reason_code is PauseReason.LOGIN

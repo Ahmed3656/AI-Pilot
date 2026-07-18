@@ -688,6 +688,13 @@ interface FoodOfferDetails {
   minimumOrder: DecimalEGP | null;
   deliveryEstimate: string | null;
   optionalTipExcluded: true;
+  sourceName?: string;
+  branchArea?: string | null;
+  distanceKm?: number | null;
+  distanceText?: string | null;
+  proximityBasis?:
+    'route_distance' | 'same_area' | 'branch_area_only' | 'unknown';
+  priceScope?: 'menu_price' | 'delivered_total';
 }
 
 interface CinemaOfferDetails {
@@ -837,11 +844,16 @@ Values listed as required in live environments MUST fail readiness when absent. 
 | `AI_PORT`                    | AI                                   | `8000`                                        | no            | no     | Private listen port                                          |
 | `AI_LOG_LEVEL`               | AI                                   | `INFO`                                        | no            | no     | Structured log level                                         |
 | `AI_MODEL`                   | AI                                   | `openai/gpt-5.2`                              | no            | no     | Exact OpenRouter Responses model                             |
+| `AI_VISION_FALLBACK_PROVIDER`| AI                                   | `openrouter`                                  | no            | no     | `openrouter` or direct `gemini` screenshot localizer         |
+| `AI_VISION_FALLBACK_MODEL`   | AI                                   | `AI_MODEL`                                    | no            | no     | OpenRouter stale-control screenshot model                    |
 | `AI_OPENROUTER_API_KEY`      | AI                                   | none                                          | live AI       | yes    | Never exposed to API, mobile, Caddy, screenshots, or reports |
+| `AI_GEMINI_API_KEY`          | AI                                   | none                                          | Gemini fallback | yes  | Direct Gemini key, granted only to the AI container          |
+| `AI_GEMINI_VISION_MODEL`     | AI                                   | `gemini-3-flash-preview`                      | no            | no     | Direct Gemini screenshot-grounding model                     |
 | `AI_SELENIUM_REMOTE_URL`     | AI                                   | `http://browser:4444/wd/hub`                  | live          | no     | Private WebDriver URL                                        |
 | `AI_CONTROL_API_URL`         | AI                                   | `http://api:3000`                             | live          | no     | Private API origin; internal paths appended                  |
 | `AI_INTERNAL_TOKEN`          | AI                                   | none                                          | live          | yes    | Compose maps from the same `INTERNAL_TOKEN` value            |
 | `AI_MAX_COMPUTER_STEPS`      | AI                                   | `80`                                          | no            | no     | Integer 1..200                                               |
+| `AI_MAX_VISUAL_RETRIES`      | AI                                   | `3`                                           | no            | no     | Detector failures before human takeover, 1..10               |
 | `AI_REQUEST_TIMEOUT_SECONDS` | AI                                   | `30`                                          | no            | no     | Internal/OpenRouter request timeout, 1..120                  |
 | `EXPO_PUBLIC_API_URL`        | mobile                               | local `http://localhost:8080`                 | build         | no     | Origin only; client appends `/api/v1`                        |
 | `EXPO_PUBLIC_AUTH_REQUIRED`  | mobile                               | `true`                                        | no            | no     | Must be `true` for any live/shared demo                      |

@@ -1,5 +1,6 @@
 import { isAxiosError } from 'axios';
 import { apiClient } from '@/api/client';
+import { isLocalDevelopmentOrigin } from '@/config/api-origin';
 import { environment } from '@/config/environment';
 import {
   clearTemporaryAddress,
@@ -379,6 +380,19 @@ export async function createViewerToken(
     { headers: mutationHeaders() },
   );
   const viewerUrl = new URL(data.viewerUrl);
+  const apiOrigin = new URL(environment.apiOrigin);
+  if (
+    viewerUrl.origin !== apiOrigin.origin &&
+    environment.isDevelopment &&
+    isLocalDevelopmentOrigin(viewerUrl.origin) &&
+    isLocalDevelopmentOrigin(apiOrigin.origin)
+  ) {
+    // One development gateway serves both the API and /viewer. The API's
+    // advertised LAN origin is correct for phones, while a website opened on
+    // localhost must use localhost so its SameSite viewer cookie is sent.
+    viewerUrl.protocol = apiOrigin.protocol;
+    viewerUrl.host = apiOrigin.host;
+  }
   if (
     data.mode !== mode ||
     data.tokenType !== 'Bearer' ||
@@ -390,7 +404,7 @@ export async function createViewerToken(
   ) {
     throw new Error('INVALID_VIEWER_TOKEN_RESPONSE');
   }
-  return data;
+  return { ...data, viewerUrl: viewerUrl.toString() };
 }
 
 export async function getRunEventHistory(
