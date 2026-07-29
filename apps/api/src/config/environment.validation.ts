@@ -132,7 +132,7 @@ export function validateEnvironment(config: Record<string, unknown>) {
     validated.JWT_SECRET,
     validated.INTERNAL_TOKEN,
     validated.VIEWER_TOKEN_SECRET,
-  ].filter((value): value is string => Boolean(value));
+  ].filter((secret): secret is string => Boolean(secret));
   if (new Set(secrets).size !== secrets.length)
     throw new Error(
       'JWT_SECRET, INTERNAL_TOKEN, and VIEWER_TOKEN_SECRET must be distinct',

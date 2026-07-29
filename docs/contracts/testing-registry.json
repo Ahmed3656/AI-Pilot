@@ -1,0 +1,1492 @@
+{
+  "schemaVersion": "1.0.0",
+  "contractVersion": "1.0.0",
+  "inference": {
+    "providerClass": "self_hosted_open_weight",
+    "interfaceVersion": "1.0.0",
+    "requiredCapabilities": [
+      "structured_output",
+      "tool_call_proposals",
+      "cancellation",
+      "timeout",
+      "bounded_context",
+      "bounded_output",
+      "deterministic_failures"
+    ],
+    "conditionalCapabilities": {
+      "visual": ["vision_input"]
+    },
+    "failureReasons": [
+      "unavailable",
+      "timeout",
+      "cancelled",
+      "capability_missing",
+      "context_limit",
+      "output_limit",
+      "invalid_structured_output",
+      "retry_exhausted"
+    ],
+    "minimumContextTokens": 8192,
+    "minimumOutputTokens": 1024,
+    "defaultTimeoutSeconds": 60,
+    "maximumTimeoutSeconds": 120,
+    "maximumAttempts": 2,
+    "retryDelaySeconds": [1]
+  },
+  "domainFamilies": {
+    "organization_access": {
+      "schemas": [
+        "OrganizationResource",
+        "MembershipResource",
+        "AuthenticationSessionResource",
+        "Role",
+        "DomainEventHistoryResponse"
+      ],
+      "operations": [
+        "createAuthenticationSession",
+        "refreshAuthenticationSession",
+        "revokeAuthenticationSession",
+        "createOrganization",
+        "listOrganizations",
+        "getOrganization",
+        "listOrganizationMemberships",
+        "createOrganizationMembership",
+        "transitionOrganizationMembership",
+        "listTestingDomainEvents"
+      ],
+      "permissions": [
+        "organization.create",
+        "organization.read",
+        "organization.membership.read",
+        "organization.membership.manage",
+        "authentication.session.manage"
+      ],
+      "statuses": ["organization", "membership", "authenticationSession"],
+      "events": [
+        "organization.membership_changed",
+        "authentication.session_changed"
+      ],
+      "errorCodes": [
+        "SESSION_INVALID",
+        "UNAUTHENTICATED",
+        "PERMISSION_DENIED",
+        "TENANT_NOT_FOUND",
+        "AUTHENTICATION_SESSION_NOT_FOUND",
+        "MEMBERSHIP_NOT_FOUND",
+        "STALE_RESOURCE_VERSION",
+        "INVALID_DOMAIN_TRANSITION"
+      ],
+      "acceptance": ["DOMAIN-ORG-01", "DOMAIN-ORG-02", "DOMAIN-ORG-03"]
+    },
+    "project_environment": {
+      "schemas": [
+        "ProjectResource",
+        "EnvironmentResource",
+        "EnvironmentVersion",
+        "TargetResource",
+        "TargetVersion"
+      ],
+      "operations": [
+        "createTestingProject",
+        "listTestingProjects",
+        "getTestingProject",
+        "transitionTestingProject",
+        "createTestingEnvironment",
+        "listTestingEnvironments",
+        "getTestingEnvironment",
+        "createTestingEnvironmentVersion",
+        "decideTestingEnvironmentVerification",
+        "createTestingTarget",
+        "listTestingTargets",
+        "getTestingTarget",
+        "decideTestingTargetVerification"
+      ],
+      "permissions": [
+        "testing.project.read",
+        "testing.project.create",
+        "testing.project.manage",
+        "testing.environment.read",
+        "testing.environment.create",
+        "testing.environment.manage",
+        "testing.environment.verify",
+        "testing.target.read",
+        "testing.target.create",
+        "testing.target.verify"
+      ],
+      "statuses": ["project", "environment", "target"],
+      "events": ["project.environment_changed"],
+      "errorCodes": [
+        "TENANT_NOT_FOUND",
+        "PROJECT_NOT_FOUND",
+        "ENVIRONMENT_NOT_FOUND",
+        "ENVIRONMENT_NOT_READY",
+        "TARGET_NOT_FOUND",
+        "TARGET_NOT_VERIFIED",
+        "STALE_RESOURCE_VERSION",
+        "VERSION_IMMUTABLE",
+        "TARGET_VERIFICATION_CONFLICT"
+      ],
+      "acceptance": [
+        "DOMAIN-PROJECT-01",
+        "DOMAIN-PROJECT-02",
+        "DOMAIN-ENV-01",
+        "DOMAIN-ENV-02"
+      ]
+    },
+    "application_state": {
+      "schemas": [
+        "ApplicationRoleResource",
+        "CredentialHandleResource",
+        "FixtureResource",
+        "FixtureVersion",
+        "FixtureInstance"
+      ],
+      "operations": [
+        "createTestingApplicationRole",
+        "listTestingApplicationRoles",
+        "transitionTestingApplicationRole",
+        "registerTestingCredentialHandle",
+        "listTestingCredentialHandles",
+        "revokeTestingCredentialHandle",
+        "createTestingFixture",
+        "listTestingFixtures",
+        "createTestingFixtureVersion",
+        "reviewTestingFixtureVersion",
+        "setupTestingFixture",
+        "cleanupTestingFixture"
+      ],
+      "permissions": [
+        "testing.application_role.read",
+        "testing.application_role.manage",
+        "testing.credential_handle.read",
+        "testing.credential_handle.manage",
+        "testing.fixture.read",
+        "testing.fixture.manage",
+        "testing.fixture.setup"
+      ],
+      "statuses": [
+        "applicationRole",
+        "credentialHandle",
+        "fixture",
+        "fixtureInstance"
+      ],
+      "events": ["application.fixture_changed"],
+      "errorCodes": [
+        "APPLICATION_ROLE_NOT_FOUND",
+        "CREDENTIAL_HANDLE_NOT_FOUND",
+        "CREDENTIAL_HANDLE_EXPIRED",
+        "FIXTURE_NOT_FOUND",
+        "FIXTURE_VERSION_NOT_FOUND",
+        "FIXTURE_INSTANCE_NOT_FOUND",
+        "STALE_RESOURCE_VERSION",
+        "VERSION_IMMUTABLE",
+        "INVALID_DOMAIN_TRANSITION"
+      ],
+      "acceptance": [
+        "DOMAIN-APP-01",
+        "DOMAIN-APP-02",
+        "DOMAIN-FIXTURE-01",
+        "DOMAIN-FIXTURE-02"
+      ]
+    },
+    "campaigns": {
+      "schemas": ["CampaignResource", "CreateCampaignRequest"],
+      "operations": [
+        "createTestingCampaign",
+        "listTestingCampaigns",
+        "getTestingCampaign",
+        "transitionTestingCampaign",
+        "requestTestingCampaignPlanning"
+      ],
+      "permissions": [
+        "testing.campaign.read",
+        "testing.campaign.create",
+        "testing.campaign.control"
+      ],
+      "statuses": ["campaign"],
+      "events": ["campaign.status_changed"],
+      "errorCodes": [
+        "CAMPAIGN_NOT_FOUND",
+        "ENVIRONMENT_NOT_READY",
+        "PLAN_NOT_APPROVED",
+        "STALE_RESOURCE_VERSION",
+        "INVALID_DOMAIN_TRANSITION"
+      ],
+      "acceptance": [
+        "DOMAIN-CAMPAIGN-01",
+        "DOMAIN-CAMPAIGN-02",
+        "DOMAIN-CAMPAIGN-03"
+      ]
+    },
+    "requirements": {
+      "schemas": [
+        "RequirementSourceResource",
+        "RequirementIngestionResource",
+        "RequirementResource",
+        "RequirementVersion"
+      ],
+      "operations": [
+        "createTestingRequirementSource",
+        "listTestingRequirementSources",
+        "transitionTestingRequirementSource",
+        "ingestTestingRequirementSource",
+        "listTestingRequirements",
+        "getTestingRequirement",
+        "createTestingRequirementVersion",
+        "reviewTestingRequirementVersion",
+        "completeInternalTestingRequirementIngestion",
+        "failInternalTestingRequirementIngestion"
+      ],
+      "permissions": [
+        "testing.requirement.read",
+        "testing.requirement.manage",
+        "testing.requirement.review"
+      ],
+      "statuses": ["requirementSource", "requirementIngestion", "requirement"],
+      "events": ["requirement.version_changed"],
+      "errorCodes": [
+        "REQUIREMENT_SOURCE_NOT_FOUND",
+        "REQUIREMENT_INGESTION_NOT_FOUND",
+        "REQUIREMENT_NOT_FOUND",
+        "REQUIREMENT_VERSION_NOT_FOUND",
+        "STALE_RESOURCE_VERSION",
+        "VERSION_IMMUTABLE",
+        "INVALID_DOMAIN_TRANSITION"
+      ],
+      "acceptance": [
+        "DOMAIN-REQ-01",
+        "DOMAIN-REQ-02",
+        "DOMAIN-REQ-03",
+        "DOMAIN-REQ-04"
+      ]
+    },
+    "discovery": {
+      "schemas": [
+        "DiscoveryResource",
+        "DiscoveryVersion",
+        "DiscoveryNode",
+        "DiscoveryEdge"
+      ],
+      "operations": [
+        "createTestingDiscovery",
+        "listTestingDiscoveries",
+        "getTestingDiscovery",
+        "listTestingDiscoveryVersions",
+        "getTestingDiscoveryVersion",
+        "completeInternalTestingDiscovery"
+      ],
+      "permissions": ["testing.discovery.read", "testing.discovery.create"],
+      "statuses": ["discovery"],
+      "events": ["discovery.version_created"],
+      "errorCodes": [
+        "DISCOVERY_NOT_FOUND",
+        "DISCOVERY_VERSION_NOT_FOUND",
+        "VERSION_IMMUTABLE",
+        "EVENT_ID_CONFLICT"
+      ],
+      "acceptance": [
+        "DOMAIN-DISCOVERY-01",
+        "DOMAIN-DISCOVERY-02",
+        "DOMAIN-DISCOVERY-03"
+      ]
+    },
+    "planning": {
+      "schemas": [
+        "PlanResource",
+        "PlanVersion",
+        "CriticalJourney",
+        "TestCase",
+        "TestStep",
+        "OracleDefinition",
+        "EvidenceRequirement"
+      ],
+      "operations": [
+        "createTestingPlan",
+        "getTestingPlan",
+        "getTestingPlanVersion",
+        "reviewTestingPlanVersion",
+        "createInternalTestingPlanVersion"
+      ],
+      "permissions": [
+        "testing.plan.read",
+        "testing.plan.create",
+        "testing.plan.review"
+      ],
+      "statuses": ["plan"],
+      "events": ["plan.version_changed"],
+      "errorCodes": [
+        "PLAN_NOT_FOUND",
+        "PLAN_VERSION_NOT_FOUND",
+        "PLAN_NOT_APPROVED",
+        "SIDE_EFFECT_NOT_ALLOWED",
+        "STALE_RESOURCE_VERSION",
+        "VERSION_IMMUTABLE",
+        "INVALID_DOMAIN_TRANSITION"
+      ],
+      "acceptance": [
+        "DOMAIN-PLAN-01",
+        "DOMAIN-PLAN-02",
+        "DOMAIN-PLAN-03",
+        "DOMAIN-PLAN-04"
+      ]
+    },
+    "resource_governance": {
+      "schemas": [
+        "CampaignProfileResource",
+        "CampaignProfileVersion",
+        "ResourceBudget",
+        "BudgetReservationResource",
+        "ResourceUsage",
+        "QuotaResource"
+      ],
+      "operations": [
+        "createTestingCampaignProfile",
+        "listTestingCampaignProfiles",
+        "createTestingCampaignProfileVersion",
+        "getTestingQuota",
+        "reserveTestingCampaignBudget",
+        "getTestingBudgetReservation",
+        "releaseTestingBudgetReservation",
+        "getTestingCampaignUsage",
+        "recordInternalTestingUsage"
+      ],
+      "permissions": [
+        "testing.campaign_profile.read",
+        "testing.campaign_profile.manage",
+        "testing.budget.read",
+        "testing.budget.reserve"
+      ],
+      "statuses": ["campaignProfile", "budgetReservation"],
+      "events": ["budget.usage_changed"],
+      "errorCodes": [
+        "CAMPAIGN_PROFILE_NOT_FOUND",
+        "BUDGET_RESERVATION_NOT_FOUND",
+        "BUDGET_RESERVATION_EXHAUSTED",
+        "CLEANUP_RESERVE_EXHAUSTED",
+        "QUOTA_EXCEEDED",
+        "STALE_RESOURCE_VERSION",
+        "VERSION_IMMUTABLE"
+      ],
+      "acceptance": [
+        "DOMAIN-BUDGET-01",
+        "DOMAIN-BUDGET-02",
+        "DOMAIN-BUDGET-03",
+        "DOMAIN-BUDGET-04"
+      ]
+    },
+    "findings": {
+      "schemas": [
+        "CanonicalFindingResource",
+        "FindingOccurrenceResource",
+        "FindingComment",
+        "FindingAssignment",
+        "FixClaimResource",
+        "RetestResource",
+        "RiskAcceptanceResource"
+      ],
+      "operations": [
+        "listTestingRunFindings",
+        "getTestingRunFinding",
+        "listTestingFindings",
+        "getTestingFinding",
+        "assignTestingFinding",
+        "commentOnTestingFinding",
+        "markTestingFindingExpectedBehavior",
+        "createTestingFindingFixClaim",
+        "requestTestingFindingRetest",
+        "closeTestingFinding",
+        "createTestingFindingRiskAcceptance",
+        "revokeTestingFindingRiskAcceptance"
+      ],
+      "permissions": [
+        "testing.finding.read",
+        "testing.finding.triage",
+        "testing.finding.comment",
+        "testing.finding.assign",
+        "testing.finding.retest",
+        "testing.finding.risk_accept"
+      ],
+      "statuses": ["finding", "fixClaim", "retest", "riskAcceptance"],
+      "events": [
+        "finding.created",
+        "finding.occurrence_recorded",
+        "finding.lifecycle_changed"
+      ],
+      "errorCodes": [
+        "CANONICAL_FINDING_NOT_FOUND",
+        "FINDING_OCCURRENCE_NOT_FOUND",
+        "FIX_CLAIM_NOT_FOUND",
+        "RETEST_NOT_FOUND",
+        "RISK_ACCEPTANCE_NOT_FOUND",
+        "STALE_RESOURCE_VERSION",
+        "VERSION_IMMUTABLE",
+        "INVALID_DOMAIN_TRANSITION"
+      ],
+      "acceptance": [
+        "DOMAIN-FINDING-01",
+        "DOMAIN-FINDING-02",
+        "DOMAIN-FINDING-03",
+        "DOMAIN-FINDING-04",
+        "DOMAIN-FINDING-05"
+      ]
+    },
+    "results_exports": {
+      "schemas": [
+        "CampaignReadinessReport",
+        "CoverageDisclosure",
+        "ExportResource",
+        "CampaignFinalResult",
+        "RunReport"
+      ],
+      "operations": [
+        "getTestingCampaignReadinessReport",
+        "getTestingCampaignCoverage",
+        "createTestingCampaignExport",
+        "getTestingCampaignExport",
+        "getTestingCampaignFinalResult",
+        "finalizeInternalTestingCampaignResult"
+      ],
+      "permissions": ["testing.result.read", "testing.result.export"],
+      "statuses": ["export", "report"],
+      "events": [
+        "campaign.result_finalized",
+        "export.completed",
+        "report.finalized"
+      ],
+      "errorCodes": [
+        "CAMPAIGN_NOT_FOUND",
+        "EXPORT_NOT_FOUND",
+        "EXPORT_EXPIRED",
+        "FINAL_RESULT_NOT_READY",
+        "VERSION_IMMUTABLE"
+      ],
+      "acceptance": [
+        "DOMAIN-RESULT-01",
+        "DOMAIN-RESULT-02",
+        "DOMAIN-RESULT-03",
+        "DOMAIN-RESULT-04"
+      ]
+    },
+    "execution_relationships": {
+      "schemas": [
+        "ExecutionRelationship",
+        "RunResource",
+        "JobLease",
+        "EvidenceResource",
+        "RunReport"
+      ],
+      "operations": [
+        "createTestingRun",
+        "getTestingRun",
+        "getTestingCampaignExecutionGraph",
+        "claimInternalTestingJob",
+        "appendInternalTestingJobEvent",
+        "uploadInternalTestingJobEvidence",
+        "completeInternalTestingJob",
+        "failInternalTestingJob"
+      ],
+      "permissions": [
+        "testing.run.read",
+        "testing.run.create",
+        "testing.run.control",
+        "testing.evidence.read"
+      ],
+      "statuses": ["run", "job", "evidence"],
+      "events": [
+        "run.created",
+        "run.status_changed",
+        "evidence.captured",
+        "run.completed",
+        "run.failed",
+        "run.cancelled"
+      ],
+      "errorCodes": [
+        "CAMPAIGN_NOT_FOUND",
+        "PLAN_VERSION_NOT_FOUND",
+        "RUN_NOT_FOUND",
+        "JOB_NOT_FOUND",
+        "EVIDENCE_NOT_FOUND",
+        "FINDING_OCCURRENCE_NOT_FOUND",
+        "INVALID_JOB_LEASE",
+        "JOB_LEASE_CONFLICT",
+        "JOB_LEASE_EXPIRED",
+        "INVALID_RUN_TRANSITION"
+      ],
+      "acceptance": ["DOMAIN-REL-01", "DOMAIN-REL-02", "DOMAIN-REL-03"]
+    }
+  },
+  "statuses": {
+    "organization": ["active", "suspended"],
+    "membership": ["invited", "active", "suspended", "revoked"],
+    "authenticationSession": ["active", "revoked", "expired"],
+    "project": ["active", "archived"],
+    "environment": [
+      "draft",
+      "pending_verification",
+      "ready",
+      "suspended",
+      "archived"
+    ],
+    "applicationRole": ["active", "disabled", "archived"],
+    "credentialHandle": ["active", "expired", "revoked"],
+    "fixture": ["draft", "in_review", "approved", "rejected", "retired"],
+    "fixtureInstance": [
+      "setting_up",
+      "ready",
+      "failed",
+      "expired",
+      "cleaning",
+      "cleaned"
+    ],
+    "campaign": [
+      "draft",
+      "planning",
+      "awaiting_plan_approval",
+      "ready",
+      "running",
+      "paused",
+      "completed",
+      "failed",
+      "cancelled"
+    ],
+    "requirementSource": ["active", "paused", "archived"],
+    "requirementIngestion": ["queued", "running", "succeeded", "failed"],
+    "requirement": ["draft", "in_review", "approved", "rejected", "superseded"],
+    "discovery": ["queued", "running", "completed", "failed"],
+    "plan": ["draft", "in_review", "approved", "rejected", "superseded"],
+    "campaignProfile": ["active", "archived"],
+    "budgetReservation": [
+      "pending",
+      "active",
+      "exhausted",
+      "released",
+      "expired"
+    ],
+    "finding": [
+      "open",
+      "triaged",
+      "expected_behavior",
+      "fix_claimed",
+      "retest_pending",
+      "resolved",
+      "closed",
+      "dismissed"
+    ],
+    "fixClaim": ["active", "superseded", "verified", "rejected"],
+    "retest": ["queued", "running", "passed", "failed", "cancelled"],
+    "riskAcceptance": ["active", "revoked", "expired"],
+    "export": ["queued", "running", "completed", "failed", "expired"],
+    "target": [
+      "pending_verification",
+      "verified",
+      "rejected",
+      "revoked",
+      "expired"
+    ],
+    "run": [
+      "queued",
+      "preparing",
+      "running",
+      "waiting_for_decision",
+      "paused",
+      "cancelling",
+      "completed",
+      "failed",
+      "cancelled"
+    ],
+    "job": [
+      "queued",
+      "leased",
+      "running",
+      "waiting_for_decision",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "lease_expired"
+    ],
+    "decision": ["pending", "approved", "denied", "expired", "revoked"],
+    "controlLease": ["active", "released", "expired", "recovering"],
+    "evidence": ["available", "quarantined", "deleted"],
+    "report": ["in_progress", "final"],
+    "readiness": ["ready", "degraded", "not_ready"],
+    "readinessGate": ["pass", "warn", "fail"]
+  },
+  "lifecycleTransitions": {
+    "organization": {
+      "active": ["suspended"],
+      "suspended": ["active"]
+    },
+    "membership": {
+      "invited": ["active", "revoked"],
+      "active": ["suspended", "revoked"],
+      "suspended": ["active", "revoked"],
+      "revoked": []
+    },
+    "authenticationSession": {
+      "active": ["revoked", "expired"],
+      "revoked": [],
+      "expired": []
+    },
+    "project": {
+      "active": ["archived"],
+      "archived": []
+    },
+    "environment": {
+      "draft": ["pending_verification", "archived"],
+      "pending_verification": ["ready", "draft", "suspended", "archived"],
+      "ready": ["pending_verification", "suspended", "archived"],
+      "suspended": ["pending_verification", "archived"],
+      "archived": []
+    },
+    "applicationRole": {
+      "active": ["disabled", "archived"],
+      "disabled": ["active", "archived"],
+      "archived": []
+    },
+    "credentialHandle": {
+      "active": ["expired", "revoked"],
+      "expired": [],
+      "revoked": []
+    },
+    "fixture": {
+      "draft": ["in_review", "retired"],
+      "in_review": ["approved", "rejected", "draft"],
+      "approved": ["retired"],
+      "rejected": ["draft", "retired"],
+      "retired": []
+    },
+    "fixtureInstance": {
+      "setting_up": ["ready", "failed", "expired"],
+      "ready": ["expired", "cleaning"],
+      "failed": ["cleaning", "cleaned"],
+      "expired": ["cleaning", "cleaned"],
+      "cleaning": ["cleaned", "failed"],
+      "cleaned": []
+    },
+    "campaign": {
+      "draft": ["planning", "cancelled"],
+      "planning": ["awaiting_plan_approval", "failed", "cancelled"],
+      "awaiting_plan_approval": ["planning", "ready", "cancelled"],
+      "ready": ["running", "cancelled"],
+      "running": ["paused", "completed", "failed", "cancelled"],
+      "paused": ["running", "failed", "cancelled"],
+      "completed": [],
+      "failed": [],
+      "cancelled": []
+    },
+    "requirementSource": {
+      "active": ["paused", "archived"],
+      "paused": ["active", "archived"],
+      "archived": []
+    },
+    "requirementIngestion": {
+      "queued": ["running", "failed"],
+      "running": ["succeeded", "failed"],
+      "succeeded": [],
+      "failed": []
+    },
+    "requirement": {
+      "draft": ["in_review", "superseded"],
+      "in_review": ["approved", "rejected", "draft"],
+      "approved": ["superseded"],
+      "rejected": ["draft", "superseded"],
+      "superseded": []
+    },
+    "discovery": {
+      "queued": ["running", "failed"],
+      "running": ["completed", "failed"],
+      "completed": [],
+      "failed": []
+    },
+    "plan": {
+      "draft": ["in_review", "superseded"],
+      "in_review": ["approved", "rejected", "draft"],
+      "approved": ["superseded"],
+      "rejected": ["draft", "superseded"],
+      "superseded": []
+    },
+    "campaignProfile": {
+      "active": ["archived"],
+      "archived": []
+    },
+    "budgetReservation": {
+      "pending": ["active", "released", "expired"],
+      "active": ["exhausted", "released", "expired"],
+      "exhausted": ["released"],
+      "released": [],
+      "expired": []
+    },
+    "fixClaim": {
+      "active": ["superseded", "verified", "rejected"],
+      "superseded": [],
+      "verified": [],
+      "rejected": []
+    },
+    "retest": {
+      "queued": ["running", "cancelled"],
+      "running": ["passed", "failed", "cancelled"],
+      "passed": [],
+      "failed": [],
+      "cancelled": []
+    },
+    "riskAcceptance": {
+      "active": ["revoked", "expired"],
+      "revoked": [],
+      "expired": []
+    },
+    "export": {
+      "queued": ["running", "failed", "expired"],
+      "running": ["completed", "failed", "expired"],
+      "completed": ["expired"],
+      "failed": ["expired"],
+      "expired": []
+    }
+  },
+  "runTransitions": {
+    "queued": ["preparing", "cancelling", "failed"],
+    "preparing": [
+      "running",
+      "waiting_for_decision",
+      "paused",
+      "cancelling",
+      "failed"
+    ],
+    "running": [
+      "waiting_for_decision",
+      "paused",
+      "cancelling",
+      "completed",
+      "failed"
+    ],
+    "waiting_for_decision": ["running", "paused", "cancelling", "failed"],
+    "paused": ["$resumeStatus", "cancelling", "failed"],
+    "cancelling": ["cancelled", "failed"],
+    "completed": [],
+    "failed": [],
+    "cancelled": []
+  },
+  "decisionTypes": [
+    "allow_reversible_action",
+    "provide_authenticated_session",
+    "continue_after_safety_pause"
+  ],
+  "decisionOutcomes": ["approve", "deny"],
+  "events": [
+    "organization.membership_changed",
+    "authentication.session_changed",
+    "project.environment_changed",
+    "application.fixture_changed",
+    "campaign.status_changed",
+    "requirement.version_changed",
+    "discovery.version_created",
+    "plan.version_changed",
+    "budget.usage_changed",
+    "finding.occurrence_recorded",
+    "finding.lifecycle_changed",
+    "campaign.result_finalized",
+    "export.completed",
+    "run.created",
+    "run.status_changed",
+    "run.warning",
+    "decision.requested",
+    "decision.resolved",
+    "step.started",
+    "step.completed",
+    "oracle.evaluated",
+    "evidence.captured",
+    "finding.created",
+    "control.claimed",
+    "control.renewed",
+    "control.released",
+    "control.lease_expired",
+    "report.finalized",
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "stream.reset_required"
+  ],
+  "eventScopes": {
+    "domain": [
+      "organization.membership_changed",
+      "authentication.session_changed",
+      "project.environment_changed",
+      "application.fixture_changed",
+      "campaign.status_changed",
+      "requirement.version_changed",
+      "discovery.version_created",
+      "plan.version_changed",
+      "budget.usage_changed",
+      "finding.occurrence_recorded",
+      "finding.lifecycle_changed",
+      "campaign.result_finalized",
+      "export.completed"
+    ],
+    "run": [
+      "run.created",
+      "run.status_changed",
+      "run.warning",
+      "decision.requested",
+      "decision.resolved",
+      "step.started",
+      "step.completed",
+      "oracle.evaluated",
+      "evidence.captured",
+      "finding.created",
+      "control.claimed",
+      "control.renewed",
+      "control.released",
+      "control.lease_expired",
+      "report.finalized",
+      "run.completed",
+      "run.failed",
+      "run.cancelled",
+      "stream.reset_required"
+    ]
+  },
+  "permissions": [
+    "organization.create",
+    "organization.read",
+    "organization.membership.read",
+    "organization.membership.manage",
+    "authentication.session.manage",
+    "testing.catalog.read",
+    "testing.readiness.read",
+    "testing.project.read",
+    "testing.project.create",
+    "testing.project.manage",
+    "testing.environment.read",
+    "testing.environment.create",
+    "testing.environment.manage",
+    "testing.environment.verify",
+    "testing.target.read",
+    "testing.target.create",
+    "testing.target.verify",
+    "testing.application_role.read",
+    "testing.application_role.manage",
+    "testing.credential_handle.read",
+    "testing.credential_handle.manage",
+    "testing.fixture.read",
+    "testing.fixture.manage",
+    "testing.fixture.setup",
+    "testing.campaign.read",
+    "testing.campaign.create",
+    "testing.campaign.control",
+    "testing.requirement.read",
+    "testing.requirement.manage",
+    "testing.requirement.review",
+    "testing.discovery.read",
+    "testing.discovery.create",
+    "testing.plan.read",
+    "testing.plan.create",
+    "testing.plan.review",
+    "testing.campaign_profile.read",
+    "testing.campaign_profile.manage",
+    "testing.budget.read",
+    "testing.budget.reserve",
+    "testing.run.read",
+    "testing.run.create",
+    "testing.run.control",
+    "testing.decision.resolve",
+    "testing.viewer.create",
+    "testing.control.claim",
+    "testing.finding.read",
+    "testing.finding.triage",
+    "testing.finding.comment",
+    "testing.finding.assign",
+    "testing.finding.retest",
+    "testing.finding.risk_accept",
+    "testing.result.read",
+    "testing.result.export",
+    "testing.evidence.read"
+  ],
+  "roles": ["viewer", "reviewer", "planner", "operator", "admin", "owner"],
+  "roleInherits": {
+    "viewer": [],
+    "reviewer": ["viewer"],
+    "planner": ["viewer"],
+    "operator": ["viewer"],
+    "admin": ["reviewer", "planner", "operator"],
+    "owner": ["admin"]
+  },
+  "rolePermissionGrants": {
+    "viewer": [
+      "organization.read",
+      "organization.membership.read",
+      "testing.catalog.read",
+      "testing.readiness.read",
+      "testing.project.read",
+      "testing.environment.read",
+      "testing.target.read",
+      "testing.application_role.read",
+      "testing.credential_handle.read",
+      "testing.fixture.read",
+      "testing.campaign.read",
+      "testing.requirement.read",
+      "testing.discovery.read",
+      "testing.plan.read",
+      "testing.campaign_profile.read",
+      "testing.budget.read",
+      "testing.run.read",
+      "testing.finding.read",
+      "testing.result.read",
+      "testing.evidence.read"
+    ],
+    "reviewer": [
+      "testing.requirement.review",
+      "testing.plan.review",
+      "testing.finding.triage",
+      "testing.finding.comment",
+      "testing.finding.assign",
+      "testing.finding.retest",
+      "testing.finding.risk_accept",
+      "testing.result.export"
+    ],
+    "planner": [
+      "testing.project.create",
+      "testing.environment.create",
+      "testing.target.create",
+      "testing.application_role.manage",
+      "testing.fixture.manage",
+      "testing.campaign.create",
+      "testing.requirement.manage",
+      "testing.discovery.create",
+      "testing.plan.create",
+      "testing.campaign_profile.manage"
+    ],
+    "operator": [
+      "testing.fixture.setup",
+      "testing.campaign.control",
+      "testing.budget.reserve",
+      "testing.run.create",
+      "testing.run.control",
+      "testing.decision.resolve",
+      "testing.viewer.create",
+      "testing.control.claim"
+    ],
+    "admin": [
+      "testing.project.manage",
+      "testing.environment.manage",
+      "testing.environment.verify",
+      "testing.target.verify",
+      "testing.credential_handle.manage"
+    ],
+    "owner": ["organization.membership.manage"]
+  },
+  "environmentTypes": ["development", "staging", "production"],
+  "productionPolicies": [
+    "deny",
+    "manual_approval_each_campaign",
+    "preapproved_reversible_only"
+  ],
+  "applicationRoleTypes": [
+    "anonymous",
+    "standard_user",
+    "privileged_user",
+    "administrator"
+  ],
+  "requirementSourceTypes": [
+    "manual",
+    "markdown",
+    "openapi",
+    "issue_export",
+    "test_export"
+  ],
+  "reviewOutcomes": ["approved", "rejected"],
+  "discoveryNodeTypes": [
+    "entrypoint",
+    "page",
+    "route",
+    "form",
+    "action",
+    "external_boundary"
+  ],
+  "discoveryEdgeTypes": ["navigation", "submission", "redirect", "dependency"],
+  "quotaScopes": ["organization", "project", "campaign"],
+  "exportFormats": ["json", "junit_xml", "sarif", "html"],
+  "sideEffectClasses": [
+    "none",
+    "read_only",
+    "reversible",
+    "externally_visible",
+    "irreversible"
+  ],
+  "oracleTypes": [
+    "url",
+    "dom",
+    "text",
+    "http_status",
+    "accessibility",
+    "visual",
+    "console",
+    "network",
+    "semantic",
+    "human_review"
+  ],
+  "failureSources": [
+    "product",
+    "test_definition",
+    "agent",
+    "browser",
+    "target_environment",
+    "platform",
+    "provider",
+    "policy",
+    "unknown"
+  ],
+  "findingStates": [
+    "open",
+    "triaged",
+    "expected_behavior",
+    "fix_claimed",
+    "retest_pending",
+    "resolved",
+    "closed",
+    "dismissed"
+  ],
+  "findingTransitions": {
+    "open": ["triaged", "expected_behavior", "fix_claimed", "dismissed"],
+    "triaged": [
+      "expected_behavior",
+      "fix_claimed",
+      "retest_pending",
+      "dismissed"
+    ],
+    "expected_behavior": ["triaged", "closed"],
+    "fix_claimed": ["retest_pending", "triaged"],
+    "retest_pending": ["resolved", "triaged"],
+    "resolved": ["closed", "open"],
+    "closed": ["open"],
+    "dismissed": ["open"]
+  },
+  "findingTypes": [
+    "functional",
+    "visual",
+    "accessibility",
+    "content",
+    "console",
+    "network",
+    "performance"
+  ],
+  "findingSeverities": ["critical", "high", "medium", "low", "info"],
+  "findingConfidences": ["confirmed", "high", "medium", "low"],
+  "evidenceKinds": [
+    "screenshot",
+    "dom_snapshot",
+    "accessibility_tree",
+    "console_log",
+    "network_log",
+    "browser_trace",
+    "oracle_result",
+    "action_log",
+    "human_note"
+  ],
+  "evidenceMediaTypes": {
+    "screenshot": ["image/png", "image/jpeg"],
+    "dom_snapshot": ["text/html"],
+    "accessibility_tree": ["application/json"],
+    "console_log": ["application/json"],
+    "network_log": ["application/json"],
+    "browser_trace": ["application/zip"],
+    "oracle_result": ["application/json"],
+    "action_log": ["application/json"],
+    "human_note": ["text/plain"]
+  },
+  "profiles": [
+    {
+      "key": "desktop_chromium",
+      "version": "1.0.0",
+      "browser": "chromium",
+      "nativeMobile": false
+    },
+    {
+      "key": "responsive_mobile_chromium",
+      "version": "1.0.0",
+      "browser": "chromium",
+      "nativeMobile": false
+    }
+  ],
+  "packs": [
+    {
+      "key": "smoke",
+      "version": "1.0.0",
+      "oracleTypes": ["url", "dom", "text", "http_status", "console"]
+    },
+    {
+      "key": "functional",
+      "version": "1.0.0",
+      "oracleTypes": [
+        "url",
+        "dom",
+        "text",
+        "http_status",
+        "console",
+        "network",
+        "semantic"
+      ]
+    },
+    {
+      "key": "accessibility",
+      "version": "1.0.0",
+      "oracleTypes": ["accessibility", "dom", "human_review"]
+    },
+    {
+      "key": "visual",
+      "version": "1.0.0",
+      "oracleTypes": ["visual", "human_review"]
+    },
+    {
+      "key": "exploratory",
+      "version": "1.0.0",
+      "oracleTypes": [
+        "url",
+        "dom",
+        "text",
+        "http_status",
+        "console",
+        "network",
+        "semantic",
+        "human_review"
+      ]
+    }
+  ],
+  "readinessGates": [
+    "database",
+    "durable_jobs",
+    "browser_runtime",
+    "evidence_store",
+    "event_store",
+    "viewer_gateway",
+    "viewer_signing_key",
+    "policy_registry",
+    "target_verified",
+    "catalog_compatible",
+    "local_inference",
+    "ai_capabilities"
+  ],
+  "errorCodes": [
+    {
+      "code": "VALIDATION_ERROR",
+      "httpStatus": 400
+    },
+    {
+      "code": "INVALID_CURSOR",
+      "httpStatus": 400
+    },
+    {
+      "code": "UNSUPPORTED_PROFILE",
+      "httpStatus": 400
+    },
+    {
+      "code": "UNSUPPORTED_PACK",
+      "httpStatus": 400
+    },
+    {
+      "code": "TARGET_ORIGIN_INVALID",
+      "httpStatus": 400
+    },
+    {
+      "code": "SESSION_INVALID",
+      "httpStatus": 401
+    },
+    {
+      "code": "SIDE_EFFECT_NOT_ALLOWED",
+      "httpStatus": 400
+    },
+    {
+      "code": "UNAUTHENTICATED",
+      "httpStatus": 401
+    },
+    {
+      "code": "INVALID_VIEWER_TOKEN",
+      "httpStatus": 401
+    },
+    {
+      "code": "INVALID_INTERNAL_TOKEN",
+      "httpStatus": 401
+    },
+    {
+      "code": "INVALID_JOB_LEASE",
+      "httpStatus": 401
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "httpStatus": 403
+    },
+    {
+      "code": "TARGET_NOT_VERIFIED",
+      "httpStatus": 403
+    },
+    {
+      "code": "CONTROL_NOT_ALLOWED",
+      "httpStatus": 403
+    },
+    {
+      "code": "EVIDENCE_ACCESS_DENIED",
+      "httpStatus": 403
+    },
+    {
+      "code": "TENANT_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "ORGANIZATION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "AUTHENTICATION_SESSION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "MEMBERSHIP_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "PROJECT_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "ENVIRONMENT_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "APPLICATION_ROLE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "CREDENTIAL_HANDLE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "FIXTURE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "FIXTURE_VERSION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "FIXTURE_INSTANCE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "CAMPAIGN_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "REQUIREMENT_SOURCE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "REQUIREMENT_INGESTION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "REQUIREMENT_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "REQUIREMENT_VERSION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "DISCOVERY_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "DISCOVERY_VERSION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "PLAN_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "PLAN_VERSION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "CAMPAIGN_PROFILE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "BUDGET_RESERVATION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "CANONICAL_FINDING_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "FINDING_OCCURRENCE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "FIX_CLAIM_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "RETEST_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "RISK_ACCEPTANCE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "EXPORT_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "TARGET_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "RUN_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "DECISION_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "FINDING_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "EVIDENCE_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "JOB_NOT_FOUND",
+      "httpStatus": 404
+    },
+    {
+      "code": "IDEMPOTENCY_KEY_REUSED",
+      "httpStatus": 409
+    },
+    {
+      "code": "INVALID_RUN_TRANSITION",
+      "httpStatus": 409
+    },
+    {
+      "code": "STALE_RESOURCE_VERSION",
+      "httpStatus": 409
+    },
+    {
+      "code": "DECISION_ALREADY_RESOLVED",
+      "httpStatus": 409
+    },
+    {
+      "code": "CONTROL_LEASE_CONFLICT",
+      "httpStatus": 409
+    },
+    {
+      "code": "EVENT_ID_CONFLICT",
+      "httpStatus": 409
+    },
+    {
+      "code": "JOB_LEASE_CONFLICT",
+      "httpStatus": 409
+    },
+    {
+      "code": "JOB_ALREADY_TERMINAL",
+      "httpStatus": 409
+    },
+    {
+      "code": "TARGET_VERIFICATION_CONFLICT",
+      "httpStatus": 409
+    },
+    {
+      "code": "INVALID_DOMAIN_TRANSITION",
+      "httpStatus": 409
+    },
+    {
+      "code": "VERSION_IMMUTABLE",
+      "httpStatus": 409
+    },
+    {
+      "code": "PLAN_NOT_APPROVED",
+      "httpStatus": 409
+    },
+    {
+      "code": "ENVIRONMENT_NOT_READY",
+      "httpStatus": 409
+    },
+    {
+      "code": "BUDGET_RESERVATION_EXHAUSTED",
+      "httpStatus": 409
+    },
+    {
+      "code": "CLEANUP_RESERVE_EXHAUSTED",
+      "httpStatus": 409
+    },
+    {
+      "code": "CURSOR_EXPIRED",
+      "httpStatus": 410
+    },
+    {
+      "code": "EVENT_CURSOR_EXPIRED",
+      "httpStatus": 410
+    },
+    {
+      "code": "CONTROL_LEASE_EXPIRED",
+      "httpStatus": 410
+    },
+    {
+      "code": "JOB_LEASE_EXPIRED",
+      "httpStatus": 410
+    },
+    {
+      "code": "EVIDENCE_EXPIRED",
+      "httpStatus": 410
+    },
+    {
+      "code": "CREDENTIAL_HANDLE_EXPIRED",
+      "httpStatus": 410
+    },
+    {
+      "code": "EXPORT_EXPIRED",
+      "httpStatus": 410
+    },
+    {
+      "code": "EVIDENCE_TOO_LARGE",
+      "httpStatus": 413
+    },
+    {
+      "code": "EVIDENCE_MEDIA_TYPE_UNSUPPORTED",
+      "httpStatus": 415
+    },
+    {
+      "code": "RATE_LIMITED",
+      "httpStatus": 429
+    },
+    {
+      "code": "QUOTA_EXCEEDED",
+      "httpStatus": 429
+    },
+    {
+      "code": "INTERNAL_ERROR",
+      "httpStatus": 500
+    },
+    {
+      "code": "EXECUTION_PROVIDER_UNAVAILABLE",
+      "httpStatus": 502
+    },
+    {
+      "code": "NOT_READY",
+      "httpStatus": 503
+    },
+    {
+      "code": "DEPENDENCY_UNAVAILABLE",
+      "httpStatus": 503
+    },
+    {
+      "code": "NO_CAPABLE_WORKER",
+      "httpStatus": 503
+    },
+    {
+      "code": "FINAL_RESULT_NOT_READY",
+      "httpStatus": 503
+    }
+  ]
+}
