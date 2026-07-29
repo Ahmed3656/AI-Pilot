@@ -106,12 +106,21 @@ export function validateEnvironment(config: Record<string, unknown>) {
       'VIEWER_TOKEN_SECRET',
       'DEALPILOT_PUBLIC_ORIGIN',
     ] as const;
-    const missing = required.filter((key) => !config[key]);
-    if (!validated.DATABASE_ENABLED) missing.push('DATABASE_URL');
+    const missing: string[] = required.filter((key) => !config[key]);
+    if (!validated.DATABASE_ENABLED) missing.push('DATABASE_ENABLED');
     if (missing.length)
       throw new Error(
         `Live API configuration is incomplete: ${[...new Set(missing)].join(', ')}`,
       );
   }
+  const secrets = [
+    validated.JWT_SECRET,
+    validated.INTERNAL_TOKEN,
+    validated.VIEWER_TOKEN_SECRET,
+  ].filter((secret): secret is string => Boolean(secret));
+  if (new Set(secrets).size !== secrets.length)
+    throw new Error(
+      'JWT_SECRET, INTERNAL_TOKEN, and VIEWER_TOKEN_SECRET must be distinct',
+    );
   return normalized;
 }

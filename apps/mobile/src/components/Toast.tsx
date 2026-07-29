@@ -30,11 +30,7 @@ interface ToastItem {
 
 interface ToastContextValue {
   dismissToast: () => void;
-  showToast: (
-    message: string,
-    tone?: ToastTone,
-    durationMs?: number,
-  ) => void;
+  showToast: (message: string, tone?: ToastTone, durationMs?: number) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
@@ -178,7 +174,9 @@ export function ToastProvider({ children }: PropsWithChildren) {
                   { opacity: pressed ? 0.45 : 1 },
                 ]}
               >
-                <Text style={[styles.dismissText, { color: theme.colors.muted }]}>
+                <Text
+                  style={[styles.dismissText, { color: theme.colors.muted }]}
+                >
                   ×
                 </Text>
               </Pressable>

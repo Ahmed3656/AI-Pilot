@@ -38,11 +38,15 @@ describe('environment validation', () => {
     ).toThrow('DATABASE_ENABLED');
   });
 
-  it('requires JWT, internal, and viewer secrets to be distinct', () => {
+  it.each([
+    ['INTERNAL_TOKEN', 'JWT_SECRET'],
+    ['VIEWER_TOKEN_SECRET', 'JWT_SECRET'],
+    ['VIEWER_TOKEN_SECRET', 'INTERNAL_TOKEN'],
+  ] as const)('rejects matching %s and %s', (duplicateKey, sourceKey) => {
     expect(() =>
       validateEnvironment({
         ...productionEnvironment,
-        VIEWER_TOKEN_SECRET: productionEnvironment.JWT_SECRET,
+        [duplicateKey]: productionEnvironment[sourceKey],
       }),
     ).toThrow('must be distinct');
   });
