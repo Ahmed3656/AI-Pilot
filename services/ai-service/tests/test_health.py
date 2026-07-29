@@ -17,8 +17,24 @@ def test_health_endpoints() -> None:
 def test_production_readiness_fails_without_live_secrets(monkeypatch: MonkeyPatch) -> None:
     settings = app.state.settings
     monkeypatch.setattr(settings, "environment", "production")
-    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "openrouter_api_key", "")
     monkeypatch.setattr(settings, "internal_token", "")
+
+    response = client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Live AI configuration is incomplete"}
+
+
+def test_production_readiness_requires_gemini_key_when_selected(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    settings = app.state.settings
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "openrouter_api_key", "configured")
+    monkeypatch.setattr(settings, "internal_token", "configured")
+    monkeypatch.setattr(settings, "vision_fallback_provider", "gemini")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
 
     response = client.get("/health/ready")
 

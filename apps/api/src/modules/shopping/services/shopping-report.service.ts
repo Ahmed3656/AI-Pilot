@@ -4,6 +4,7 @@ import { SHOPPING_STORE, ShoppingStore } from '../repositories';
 import {
   ApprovalStatus,
   ApprovalType,
+  ShoppingCategory,
   ShoppingRunState,
 } from '../shopping.types';
 
@@ -49,6 +50,8 @@ export class ShoppingReportService {
       buckets[classification].push(offerView(offer, classification));
     }
     buckets.valid.sort(compareOffers);
+    buckets.incomplete.sort(compareObservedOffers);
+    buckets.excluded.sort(compareObservedOffers);
 
     const couponAttempts = data.couponAttempts.map((item) => ({
       id: item.id,
@@ -136,7 +139,10 @@ export class ShoppingReportService {
           evidenceIds: stringArray(item.payload.evidenceIds),
         })),
       partialFailures: data.merchantAttempts
-        .filter((item) => item.outcome !== 'succeeded')
+        .filter(
+          (item) =>
+            item.outcome !== 'succeeded' && item.outcome !== 'in_progress',
+        )
         .map((item) => ({
           merchantAttemptId: item.id,
           code: item.failureCode ?? item.outcome.toUpperCase(),
@@ -307,9 +313,42 @@ function compareOffers(
     cents(left.price.finalTotal!) - cents(right.price.finalTotal!),
   );
   if (money !== 0) return money;
+  const suitability = offerSuitability(left) - offerSuitability(right);
+  if (suitability !== 0) return suitability;
   if (left.match.confidence !== right.match.confidence)
     return right.match.confidence - left.match.confidence;
   return left.id.localeCompare(right.id);
+}
+
+function offerSuitability(offer: ReturnType<typeof offerView>): number {
+  const value =
+    offer.category === ShoppingCategory.Cinema
+      ? offer.details.showtime
+      : offer.details.deliveryEstimate;
+  if (typeof value !== 'string') return Number.MAX_SAFE_INTEGER;
+  const timestamp = Date.parse(
+    value.length === 10 ? `${value}T23:59:59+03:00` : value,
+  );
+  return Number.isNaN(timestamp) ? Number.MAX_SAFE_INTEGER : timestamp;
+}
+
+function compareObservedOffers(
+  left: ReturnType<typeof offerView>,
+  right: ReturnType<typeof offerView>,
+): number {
+  const leftPrice = observedPrice(left);
+  const rightPrice = observedPrice(right);
+  if (leftPrice !== rightPrice) return leftPrice - rightPrice;
+  const suitability = offerSuitability(left) - offerSuitability(right);
+  if (suitability !== 0) return suitability;
+  if (left.match.confidence !== right.match.confidence)
+    return right.match.confidence - left.match.confidence;
+  return left.id.localeCompare(right.id);
+}
+
+function observedPrice(offer: ReturnType<typeof offerView>): number {
+  const value = offer.price.finalTotal ?? offer.price.itemSubtotal;
+  return MONEY.test(value) ? Number(cents(value)) : Number.MAX_SAFE_INTEGER;
 }
 
 function stringArray(value: unknown): string[] {

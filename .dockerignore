@@ -1,4 +1,6 @@
 .git
+**/.env
+infra/phase1/.demo-state.json
 node_modules
 **/node_modules
 **/dist

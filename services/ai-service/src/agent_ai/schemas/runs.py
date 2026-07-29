@@ -64,7 +64,7 @@ class CommandName(StrEnum):
 
 _PAYLOAD_KEYS: dict[CommandName, tuple[set[str], set[str]]] = {
     CommandName.CLARIFY: ({"requestId", "answers"}, set()),
-    CommandName.PAUSE: ({"reason"}, set()),
+    CommandName.PAUSE: ({"reason"}, {"merchantAttemptId", "merchantDomain"}),
     CommandName.RESUME: ({"reason"}, set()),
     CommandName.CANCEL: ({"reason"}, set()),
     CommandName.COMPLETE: ({"reason", "reportId"}, set()),
@@ -143,6 +143,14 @@ class InternalCommandRequest(ContractModel):
         elif self.name is CommandName.PAUSE:
             if self.payload["reason"] not in {"user", "control_claim", "safety"}:
                 raise ValueError("Invalid pause reason")
+            target_keys = {"merchantAttemptId", "merchantDomain"}
+            if self.payload["reason"] == "control_claim":
+                if not target_keys.issubset(self.payload):
+                    raise ValueError("control_claim requires a merchant target")
+                _require_string(self.payload["merchantAttemptId"], "merchantAttemptId")
+                _require_string(self.payload["merchantDomain"], "merchantDomain")
+            elif target_keys.intersection(self.payload):
+                raise ValueError("merchant target is permitted only for control_claim")
         elif self.name is CommandName.RESUME:
             if self.payload["reason"] not in {"user", "control_release", "lease_expired"}:
                 raise ValueError("Invalid resume reason")

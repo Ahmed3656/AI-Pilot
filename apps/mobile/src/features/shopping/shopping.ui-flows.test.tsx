@@ -9,7 +9,7 @@ import { TextInput } from 'react-native';
 import { ApprovalCard } from './components/ApprovalCard';
 import { CandidateCard } from './components/CandidateCard';
 import { RemoteBrowser } from './components/RemoteBrowser';
-import { RunTimeline } from './components/RunTimeline';
+import { EvidenceGallery, RunTimeline } from './components/RunTimeline';
 import { ShoppingReportScreen } from './screens/ShoppingReportScreen';
 import {
   claimControl,
@@ -332,6 +332,35 @@ describe('shopping UI flows', () => {
     expect(screen.getByText('BROWSER_TTL_EXPIRED')).toBeTruthy();
   });
 
+  it('opens evidence screenshots full-screen and closes the preview', () => {
+    render(
+      <EvidenceGallery
+        evidence={[
+          {
+            id: 'evidence-screenshot-1',
+            kind: 'screenshot',
+            uri: 'https://demo.example/evidence.png',
+            sha256: 'a'.repeat(64),
+            capturedAt: run.updatedAt,
+            merchantAttemptId: 'attempt-1',
+            redacted: true,
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.press(
+      screen.getByRole('button', {
+        name: 'openScreenshot evidence-screenshot-1',
+      }),
+    );
+    expect(screen.getByTestId('evidence-lightbox')).toBeTruthy();
+    expect(screen.getByTestId('evidence-screenshot-full')).toBeTruthy();
+
+    fireEvent.press(screen.getByRole('button', { name: 'close' }));
+    expect(screen.queryByTestId('evidence-screenshot-full')).toBeNull();
+  });
+
   it('renders warnings, excluded offers, and partial failures from a partial report', () => {
     const partialReport: RunReport = {
       id: 'report-1',
@@ -395,6 +424,15 @@ describe('shopping UI flows', () => {
   });
 
   it('claims control for the same viewer, sends the token as a header, and disables expired control', async () => {
+    const takeoverAction = {
+      type: 'browser_takeover' as const,
+      requestId: 'warning-1',
+      merchantAttemptId: 'attempt-1',
+      merchantName: 'Amazon Egypt',
+      merchantDomain: 'amazon.eg',
+      reasonCode: 'captcha_detected',
+      message: 'CAPTCHA/human verification detected',
+    };
     const lease = {
       id: 'lease-1',
       runId: run.id,
@@ -412,7 +450,12 @@ describe('shopping UI flows', () => {
       expiresAt: run.browserExpiresAt,
     }));
     claim.mockResolvedValue({
-      run: { ...run, status: 'user_takeover' },
+      run: {
+        ...run,
+        status: 'user_takeover',
+        resumeStatus: 'comparing',
+        pendingAction: takeoverAction,
+      },
       lease,
     });
     release.mockResolvedValue({
@@ -426,6 +469,11 @@ describe('shopping UI flows', () => {
           onRunChanged={onRunChanged}
           runId={run.id}
           status={nextRun.status}
+          takeoverAction={
+            nextRun.pendingAction?.type === 'browser_takeover'
+              ? nextRun.pendingAction
+              : undefined
+          }
         />,
       );
     });
@@ -433,7 +481,8 @@ describe('shopping UI flows', () => {
       <RemoteBrowser
         onRunChanged={onRunChanged}
         runId={run.id}
-        status="ready_for_handoff"
+        status="paused"
+        takeoverAction={takeoverAction}
       />,
     );
 
@@ -448,6 +497,9 @@ describe('shopping UI flows', () => {
     );
     fireEvent.press(screen.getByRole('button', { name: 'takeOver' }));
     await waitFor(() =>
+      expect(claim).toHaveBeenCalledWith(run.id, 'warning-1', 'attempt-1'),
+    );
+    await waitFor(() =>
       expect(viewerToken).toHaveBeenCalledWith(run.id, 'control', 'lease-1'),
     );
     await waitFor(() =>
@@ -458,6 +510,9 @@ describe('shopping UI flows', () => {
     const source = screen.getByTestId('webview').props.source;
     expect(source.uri).not.toContain('control-secret');
     expect(source.headers.Authorization).toBe('Bearer control-secret');
+    expect(screen.getByTestId('webview').props.setSupportMultipleWindows).toBe(
+      false,
+    );
 
     view.rerender(
       <RemoteBrowser
@@ -468,5 +523,30 @@ describe('shopping UI flows', () => {
       />,
     );
     await waitFor(() => expect(screen.getByText('viewOnly')).toBeTruthy());
+  });
+
+  it('does not offer takeover without an AI user-input request', async () => {
+    viewerToken.mockResolvedValue({
+      token: 'view-secret',
+      tokenType: 'Bearer',
+      mode: 'view',
+      viewerUrl: 'https://demo.example/viewer/',
+      expiresAt: run.browserExpiresAt,
+    });
+    const view = render(
+      <RemoteBrowser onRunChanged={jest.fn()} runId={run.id} status="paused" />,
+    );
+
+    await waitFor(() => expect(viewerToken).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: 'takeOver' })).toBeNull();
+
+    view.rerender(
+      <RemoteBrowser
+        onRunChanged={jest.fn()}
+        runId={run.id}
+        status="ready_for_handoff"
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'takeOver' })).toBeNull();
   });
 });

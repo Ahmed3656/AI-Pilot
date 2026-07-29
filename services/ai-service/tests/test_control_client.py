@@ -34,12 +34,15 @@ async def test_frozen_event_envelope_and_secret_resolution_use_internal_token() 
             status=RunStatus.COMPARING,
         )
         value = await control.resolve_secret("grant-reference", "run-1", "talabat.com", "street")
+        await control.upload_evidence("run-1", "evidence:one", b"png-bytes")
 
     assert value == "secret address"
     assert [request.url.path for request in requests] == [
         "/internal/v1/ai-events",
         "/internal/v1/secrets/resolve",
+        "/internal/v1/evidence/run-1/evidence:one",
     ]
+    assert requests[2].url.raw_path.endswith(b"/evidence%3Aone")
     assert all(request.headers["X-Internal-Token"] == "shared-token" for request in requests)
     event_body = json.loads(requests[0].content)
     assert set(event_body) == {"id", "runId", "type", "status", "timestamp", "payload"}
@@ -54,6 +57,8 @@ async def test_frozen_event_envelope_and_secret_resolution_use_internal_token() 
         "merchantDomain": "talabat.com",
         "field": "street",
     }
+    assert b"png-bytes" in requests[2].content
+    assert requests[2].headers["content-type"].startswith("multipart/form-data;")
 
 
 @pytest.mark.asyncio

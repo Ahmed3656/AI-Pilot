@@ -1,5 +1,6 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
 import { ulid } from 'ulid';
 import { ContractException } from '../../core/filters/contract-exception';
 import {
@@ -19,6 +20,7 @@ import { ControlLease, RunApproval, RunEvent, ShoppingRun } from './entities';
 import { SHOPPING_STORE, ShoppingStore } from './repositories';
 import {
   AddressSecretVaultService,
+  AiBrowserBusyError,
   RunStateMachine,
   ShoppingAiClientService,
   ShoppingEventStreamService,
@@ -43,11 +45,20 @@ import {
   ViewerMode,
 } from './shopping.types';
 
+const USER_INPUT_WARNING_CODES = new Set([
+  'login_required',
+  'one_time_code_required',
+  'captcha_detected',
+  'browser_warning',
+]);
+
 @Injectable()
 export class ShoppingService implements OnModuleDestroy {
   private readonly browserTtlSeconds: number;
   private readonly leaseTtlSeconds: number;
+  private readonly publicOrigin: string;
   private readonly leaseTimers = new Map<string, NodeJS.Timeout>();
+  private readonly pendingRunOwners = new Map<string, string>();
 
   constructor(
     @Inject(SHOPPING_STORE) private readonly store: ShoppingStore,
@@ -67,6 +78,9 @@ export class ShoppingService implements OnModuleDestroy {
       'shopping.controlLeaseTtlSeconds',
       120,
     );
+    this.publicOrigin = config
+      .get<string>('shopping.publicOrigin', 'http://localhost:8080')
+      .replace(/\/$/, '');
   }
 
   onModuleDestroy(): void {
@@ -114,8 +128,14 @@ export class ShoppingService implements OnModuleDestroy {
       browserExpiresAt: new Date(Date.now() + this.browserTtlSeconds * 1000),
       lastEventId: null,
     });
-    await this.ai.createRun(candidate);
-    const run = await this.store.createRun(candidate);
+    this.pendingRunOwners.set(candidate.id, userId);
+    let run: ShoppingRun;
+    try {
+      await this.createAiRun(candidate, userId);
+      run = await this.store.createRun(candidate);
+    } finally {
+      this.pendingRunOwners.delete(candidate.id);
+    }
     await this.recordEvent(run, 'run.created', {
       requestedCategory: run.requestedCategory,
       category: run.category,
@@ -128,6 +148,82 @@ export class ShoppingService implements OnModuleDestroy {
       });
     }
     return { run: this.runView(run) };
+  }
+
+  private async createAiRun(
+    candidate: ShoppingRun,
+    userId: string,
+  ): Promise<void> {
+    try {
+      await this.ai.createRun(candidate);
+      return;
+    } catch (error) {
+      if (!(error instanceof AiBrowserBusyError)) throw error;
+      await this.recoverOrTranslateBrowserBusy(error, candidate, userId);
+    }
+  }
+
+  private async recoverOrTranslateBrowserBusy(
+    error: AiBrowserBusyError,
+    candidate: ShoppingRun,
+    userId: string,
+  ): Promise<void> {
+    const activeRunId = error.activeRunId;
+    const activeRun = activeRunId
+      ? await this.store.findRun(activeRunId)
+      : null;
+    if (
+      activeRun &&
+      activeRun.userId === userId &&
+      !TERMINAL_RUN_STATES.has(activeRun.status)
+    ) {
+      throw new ContractException(
+        'ACTIVE_RUN_EXISTS',
+        409,
+        'You already have an unfinished shopping run',
+        [
+          {
+            field: 'runId',
+            code: 'ACTIVE_RUN',
+            message: activeRun.id,
+          },
+        ],
+      );
+    }
+
+    const pendingOwner = activeRunId
+      ? this.pendingRunOwners.get(activeRunId)
+      : undefined;
+    if (activeRun && !TERMINAL_RUN_STATES.has(activeRun.status)) {
+      this.browserBusy(error);
+    }
+    if (pendingOwner !== undefined) {
+      this.browserBusy(error);
+    }
+    if (!activeRunId) {
+      this.browserBusy(error);
+    }
+
+    // The AI process can survive an API restart or a failed persistence step.
+    // If its active ID is absent from the authoritative API store (or already
+    // terminal there), no user can resume or cancel it through the public API.
+    // Close that orphan and retry this admission once.
+    try {
+      await this.ai.cancelOrphanRun(activeRunId);
+      await this.ai.createRun(candidate);
+    } catch (recoveryError) {
+      if (recoveryError instanceof AiBrowserBusyError)
+        this.browserBusy(recoveryError);
+      this.browserBusy(error);
+    }
+  }
+
+  private browserBusy(error: AiBrowserBusyError): never {
+    throw new ContractException(
+      'BROWSER_BUSY',
+      429,
+      `The shopping browser is busy; try again in ${error.retryAfterSeconds} seconds`,
+    );
   }
 
   merchants(category?: ShoppingCategory) {
@@ -403,7 +499,9 @@ export class ShoppingService implements OnModuleDestroy {
 
   async claimControl(userId: string, id: string, dto: ClaimControlDto) {
     const run = await this.getOwnedRun(userId, id);
-    this.requireState(run, ShoppingRunState.ReadyForHandoff);
+    this.requireState(run, ShoppingRunState.Paused);
+    const pending = this.requirePending(run, 'browser_takeover', dto.requestId);
+    if (pending.merchantAttemptId !== dto.merchantAttemptId) this.stale();
     if (await this.store.findActiveLease(run.id))
       throw new ContractException(
         'CONTROL_LEASE_CONFLICT',
@@ -426,7 +524,11 @@ export class ShoppingService implements OnModuleDestroy {
         ),
       ),
     });
-    await this.ai.command(run, 'pause', { reason: 'control_claim' });
+    await this.ai.command(run, 'pause', {
+      reason: 'control_claim',
+      merchantAttemptId: pending.merchantAttemptId,
+      merchantDomain: pending.merchantDomain,
+    });
     this.changeStatus(run, ShoppingRunState.UserTakeover);
     await this.store.saveRunAndLease(run, lease);
     this.scheduleLeaseRecovery(run.id, lease);
@@ -434,6 +536,7 @@ export class ShoppingService implements OnModuleDestroy {
       leaseId: lease.id,
       holderUserId: userId,
       expiresAt: lease.expiresAt.toISOString(),
+      merchantAttemptId: pending.merchantAttemptId,
     });
     return { run: this.runView(run), lease: this.leaseView(lease) };
   }
@@ -474,7 +577,10 @@ export class ShoppingService implements OnModuleDestroy {
       lease.status = ControlLeaseStatus.Recovering;
     await this.ai.command(run, 'resume', { reason: 'control_release' });
     lease.status = ControlLeaseStatus.Released;
-    this.changeStatus(run, ShoppingRunState.ReadyForHandoff);
+    const resumeStatus = run.resumeStatus ?? ShoppingRunState.ReadyForHandoff;
+    this.changeStatus(run, resumeStatus);
+    run.resumeStatus = null;
+    run.pendingAction = null;
     await this.store.saveRunAndLease(run, lease);
     this.clearLeaseTimer(run.id);
     const releasedAt = new Date().toISOString();
@@ -498,6 +604,73 @@ export class ShoppingService implements OnModuleDestroy {
 
   authorizeViewer(token: string) {
     return this.viewerTokens.authorize(token);
+  }
+
+  async uploadEvidence(
+    runId: string,
+    evidenceId: string,
+    file:
+      | { buffer: Buffer; mimetype: string; originalname: string; size: number }
+      | undefined,
+  ) {
+    if (!file || file.mimetype !== 'image/png' || !isPng(file.buffer))
+      throw new ContractException(
+        'VALIDATION_ERROR',
+        400,
+        'Evidence must be a PNG screenshot',
+      );
+    if (!evidenceId || evidenceId.length > 128)
+      throw new ContractException(
+        'VALIDATION_ERROR',
+        400,
+        'Evidence ID is invalid',
+      );
+    const run = await this.store.findRun(runId);
+    if (!run)
+      throw new ContractException(
+        'RUN_NOT_FOUND',
+        404,
+        'Shopping run not found',
+      );
+    const existing = await this.store.findEvidence(evidenceId);
+    if (existing && existing.runId !== runId)
+      throw new ContractException(
+        'EVENT_ID_CONFLICT',
+        409,
+        'Evidence ID belongs to another run',
+      );
+    const content = Buffer.from(file.buffer);
+    const saved = await this.store.saveEvidence({
+      ...(existing ?? {}),
+      id: evidenceId,
+      runId,
+      kind: existing?.kind ?? 'screenshot',
+      uri: this.evidenceUri(runId, evidenceId),
+      sha256: createHash('sha256').update(content).digest('hex'),
+      contentType: 'image/png',
+      content,
+      capturedAt: existing?.capturedAt ?? new Date(),
+      merchantAttemptId: existing?.merchantAttemptId ?? null,
+      redacted: true,
+    });
+    return { accepted: true, evidenceId: saved.id, sha256: saved.sha256 };
+  }
+
+  async evidence(userId: string, runId: string, evidenceId: string) {
+    await this.getOwnedRun(userId, runId);
+    const evidence = await this.store.findEvidence(evidenceId);
+    if (
+      !evidence ||
+      evidence.runId !== runId ||
+      !evidence.content ||
+      evidence.contentType !== 'image/png'
+    )
+      throw new ContractException(
+        'EVIDENCE_NOT_FOUND',
+        404,
+        'Screenshot evidence was not found',
+      );
+    return { content: evidence.content, contentType: evidence.contentType };
   }
 
   async resolveSecret(dto: ResolveSecretDto) {
@@ -667,11 +840,76 @@ export class ShoppingService implements OnModuleDestroy {
         );
       }
     }
+    if (dto.type === 'evidence.captured' && dto.payload.merchantAttemptId) {
+      const data = await this.store.report(run.id);
+      if (
+        !data.merchantAttempts.some(
+          (attempt) => attempt.id === dto.payload.merchantAttemptId,
+        )
+      )
+        this.missingEventReference('Merchant attempt');
+    }
+    if (dto.type === 'run.warning' && dto.payload.requiresUserInput === true) {
+      const merchantAttemptId = dto.payload.merchantAttemptId;
+      if (
+        dto.status !== ShoppingRunState.Paused ||
+        !isString(merchantAttemptId)
+      )
+        invalidEvent(dto.type);
+      const data = await this.store.report(run.id);
+      if (
+        !data.merchantAttempts.some(
+          (attempt) => attempt.id === merchantAttemptId,
+        )
+      )
+        this.missingEventReference('Merchant attempt');
+    }
+    if (dto.type === 'offer.recorded') {
+      const data = await this.store.report(run.id);
+      const attempt = data.merchantAttempts.find(
+        (candidate) => candidate.id === dto.payload.merchantAttemptId,
+      );
+      if (!attempt) this.missingEventReference('Merchant attempt');
+      if (dto.payload.offer !== undefined) {
+        const offer = dto.payload.offer as Record<string, unknown>;
+        const details = offer.details as Record<string, unknown>;
+        if (
+          details.kind !== attempt.category ||
+          !urlBelongsToDomain(String(offer.sourceUrl), attempt.merchantDomain)
+        )
+          throw new ContractException(
+            'VALIDATION_ERROR',
+            400,
+            'Offer category or source does not match its merchant attempt',
+          );
+      }
+      this.assertEvidenceReferences(data.evidence, dto.payload.evidenceIds);
+    }
+    if (dto.type === 'coupon.attempted') {
+      const data = await this.store.report(run.id);
+      if (!data.offers.some((offer) => offer.id === dto.payload.offerId))
+        this.missingEventReference('Offer');
+      this.assertEvidenceReferences(data.evidence, dto.payload.evidenceIds);
+    }
   }
 
   private async applyAiEvent(run: ShoppingRun, dto: AiEventDto): Promise<void> {
+    const previousStatus = run.status;
     run.status = dto.status;
     run.lastEventId = dto.id;
+    if (
+      dto.type === 'run.status_changed' &&
+      dto.status === ShoppingRunState.Paused &&
+      previousStatus !== ShoppingRunState.Paused
+    ) {
+      run.resumeStatus = previousStatus;
+    } else if (
+      dto.type === 'run.status_changed' &&
+      previousStatus === ShoppingRunState.Paused &&
+      dto.status !== ShoppingRunState.Paused
+    ) {
+      run.resumeStatus = null;
+    }
     switch (dto.type) {
       case 'run.clarification_required':
         run.pendingAction = {
@@ -711,6 +949,24 @@ export class ShoppingService implements OnModuleDestroy {
           holdDurationSeconds: dto.payload.holdDurationSeconds as number | null,
         };
         break;
+      case 'run.warning': {
+        if (dto.payload.requiresUserInput !== true) break;
+        const data = await this.store.report(run.id);
+        const attempt = data.merchantAttempts.find(
+          (candidate) => candidate.id === dto.payload.merchantAttemptId,
+        );
+        if (!attempt) break;
+        run.pendingAction = {
+          type: 'browser_takeover',
+          requestId: dto.id,
+          merchantAttemptId: attempt.id,
+          merchantName: attempt.merchantName,
+          merchantDomain: attempt.merchantDomain,
+          reasonCode: String(dto.payload.code),
+          message: String(dto.payload.message),
+        };
+        break;
+      }
       case 'merchant.attempt_started': {
         const merchant = EGYPT_MERCHANTS.find(
           (candidate) => candidate.id === dto.payload.merchantId,
@@ -723,7 +979,7 @@ export class ShoppingService implements OnModuleDestroy {
           merchantName: merchant.name,
           merchantDomain: merchant.domain,
           category: merchant.category,
-          outcome: 'failed',
+          outcome: 'in_progress',
           failureCode: null,
           message: 'Merchant attempt is still in progress.',
           evidenceIds: [],
@@ -746,7 +1002,117 @@ export class ShoppingService implements OnModuleDestroy {
         await this.store.saveMerchantAttempt(attempt);
         break;
       }
+      case 'evidence.captured': {
+        const evidenceId = String(dto.payload.evidenceId);
+        const uploaded = await this.store.findEvidence(evidenceId);
+        if (uploaded && uploaded.runId !== run.id)
+          throw new ContractException(
+            'EVENT_ID_CONFLICT',
+            409,
+            'Evidence ID belongs to another run',
+          );
+        await this.store.saveEvidence({
+          ...(uploaded ?? {}),
+          id: evidenceId,
+          runId: run.id,
+          kind: String(dto.payload.kind),
+          uri: this.evidenceUri(run.id, evidenceId),
+          sha256:
+            uploaded?.sha256 ??
+            createHash('sha256')
+              .update(`${run.id}:${evidenceId}`)
+              .digest('hex'),
+          contentType: uploaded?.contentType ?? null,
+          content: uploaded?.content ?? null,
+          capturedAt: new Date(dto.timestamp),
+          merchantAttemptId: dto.payload.merchantAttemptId as string | null,
+          redacted: true,
+        });
+        break;
+      }
+      case 'offer.recorded': {
+        const data = await this.store.report(run.id);
+        const attempt = data.merchantAttempts.find(
+          (candidate) => candidate.id === dto.payload.merchantAttemptId,
+        );
+        if (!attempt) break;
+        const incomingValidity = String(dto.payload.validity);
+        const snapshot = materializedOfferSnapshot(
+          dto.payload.offer,
+          attempt,
+          incomingValidity,
+          dto.payload.evidenceIds as string[],
+          dto.timestamp,
+        );
+        await this.store.saveOffer({
+          id: String(dto.payload.offerId),
+          runId: run.id,
+          merchantAttemptId: attempt.id,
+          merchantName: attempt.merchantName,
+          merchantDomain: attempt.merchantDomain,
+          category: attempt.category,
+          title: snapshot?.title ?? `Offer ${String(dto.payload.offerId)}`,
+          sourceUrl:
+            snapshot?.sourceUrl ?? `https://${attempt.merchantDomain}/`,
+          match: snapshot?.match ?? {
+            exact: false,
+            confidence: 0,
+            explanation:
+              'The canonical event confirms discovery but carries no economic detail.',
+          },
+          availability: snapshot?.availability ?? 'unknown',
+          details: snapshot?.details ?? incompleteDetails(attempt.category),
+          price: snapshot?.price ?? {
+            itemSubtotal: '0.00',
+            deliveryFee: null,
+            serviceFee: null,
+            bookingFee: null,
+            tax: null,
+            mandatoryFees: [],
+            verifiedDiscount: '0.00',
+            optionalTip:
+              attempt.category === ShoppingCategory.Food ? '0.00' : null,
+            finalTotal: null,
+          },
+          validity: incomingValidity === 'excluded' ? 'excluded' : 'incomplete',
+          observedAt: snapshot?.observedAt ?? new Date(dto.timestamp),
+          evidenceIds: dto.payload.evidenceIds as string[],
+          exclusionReason:
+            snapshot?.exclusionReason ??
+            (incomingValidity === 'excluded'
+              ? 'The AI classified this offer outside the comparison scope.'
+              : null),
+          incompleteFields: snapshot?.incompleteFields ?? ['economicDetails'],
+          ...(snapshot && incomingValidity === 'valid'
+            ? { validity: 'valid' as const }
+            : {}),
+        });
+        break;
+      }
+      case 'coupon.attempted': {
+        const offer = await this.store.findOffer(String(dto.payload.offerId));
+        if (!offer) break;
+        const coupon = dto.payload.coupon as Record<string, unknown>;
+        await this.store.saveCouponAttempt({
+          id: String(dto.payload.couponAttemptId),
+          runId: run.id,
+          offerId: offer.id,
+          merchantDomain: offer.merchantDomain,
+          code: String(coupon.code),
+          sourceUrl: String(coupon.sourceUrl),
+          status: String(dto.payload.status),
+          beforeTotal: String(coupon.beforeTotal),
+          afterTotal: coupon.afterTotal as string | null,
+          verifiedDiscount: String(coupon.verifiedDiscount),
+          rejectionReason: dto.payload.rejectionReason as string | null,
+          message: coupon.message as string | null,
+          attemptedAt: new Date(dto.timestamp),
+          evidenceIds: dto.payload.evidenceIds as string[],
+        });
+        break;
+      }
       case 'run.failed':
+        run.resumeStatus = null;
         run.failure = {
           code: String(dto.payload.failureCode),
           message: 'The shopping run failed',
@@ -758,6 +1124,7 @@ export class ShoppingService implements OnModuleDestroy {
         break;
       case 'run.completed':
       case 'run.cancelled':
+        run.resumeStatus = null;
         run.completedAt = new Date(dto.timestamp);
         run.pendingAction = null;
         this.clearLeaseTimer(run.id);
@@ -879,6 +1246,23 @@ export class ShoppingService implements OnModuleDestroy {
         403,
         'Domain access is not approved',
       );
+  }
+
+  private assertEvidenceReferences(
+    evidence: Array<{ id: string }>,
+    value: unknown,
+  ): void {
+    const known = new Set(evidence.map((item) => item.id));
+    if (!(value as string[]).every((id) => known.has(id)))
+      this.missingEventReference('Evidence');
+  }
+
+  private missingEventReference(kind: string): never {
+    throw new ContractException(
+      'ACTION_REQUEST_NOT_FOUND',
+      404,
+      `${kind} reference was not found for this run`,
+    );
   }
 
   private async ownedLease(
@@ -1029,7 +1413,10 @@ export class ShoppingService implements OnModuleDestroy {
       return;
     }
     lease.status = ControlLeaseStatus.Expired;
-    this.changeStatus(run, ShoppingRunState.ReadyForHandoff);
+    const resumeStatus = run.resumeStatus ?? ShoppingRunState.ReadyForHandoff;
+    this.changeStatus(run, resumeStatus);
+    run.resumeStatus = null;
+    run.pendingAction = null;
     await this.store.saveRunAndLease(run, lease);
     await this.recordEvent(run, 'control.lease_expired', {
       leaseId,
@@ -1043,6 +1430,10 @@ export class ShoppingService implements OnModuleDestroy {
     const timer = this.leaseTimers.get(runId);
     if (timer) clearTimeout(timer);
     this.leaseTimers.delete(runId);
+  }
+
+  private evidenceUri(runId: string, evidenceId: string): string {
+    return `${this.publicOrigin}/api/v1/shopping/runs/${encodeURIComponent(runId)}/evidence/${encodeURIComponent(evidenceId)}`;
   }
 
   private stale(): never {
@@ -1070,11 +1461,11 @@ function classify(query: string): ShoppingCategory | null {
     ],
     [
       ShoppingCategory.Food,
-      /\b(food|meal|restaurant|pizza|burger|delivery|talabat)\b|طعام|أكل|مطعم|بيتزا|وجبة/iu,
+      /\b(food|meal|restaurant|pizzas?|burgers?|delivery|talabat|elmenus|menu egypt|google maps|koshar[yi]s?|shaw(?:a|e)rmas?)\b|طعام|أكل|مطعم|بيتزا|وجبة|كشري|كشرى|شاورما/iu,
     ],
     [
       ShoppingCategory.Retail,
-      /\b(buy|phone|laptop|television|tv|product|amazon|jumia|noon)\b|شراء|هاتف|موبايل|لابتوب|منتج|تلفزيون/iu,
+      /\b(buy|phone|laptop|television|tv|product|amazon|jumia|noon|samsung|galaxy|xiaomi|redmi|oppo|realme|honor|huawei)\b|\b(?:galaxy\s+)?[asmz]\s?\d{2,3}(?:\s*(?:5g|fe|ultra|plus))?\b|\b\d{2,4}\s*(?:gb|gigabytes?)\b|شراء|هاتف|موبايل|لابتوب|منتج|تلفزيون/iu,
     ],
   ];
   const matches = groups.filter(([, pattern]) => pattern.test(text));
@@ -1098,6 +1489,15 @@ function nonEmptyAnswer(value: string | string[] | undefined): boolean {
     : Array.isArray(value) &&
         value.length > 0 &&
         value.every((item) => item.trim().length > 0);
+}
+
+function isPng(content: Buffer): boolean {
+  return (
+    content.length >= 8 &&
+    content
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  );
 }
 
 function canonicalDomain(domain: string): boolean {
@@ -1136,6 +1536,7 @@ const EVENT_KEYS: Record<
   },
   'offer.recorded': {
     required: ['offerId', 'validity', 'merchantAttemptId', 'evidenceIds'],
+    optional: ['offer'],
   },
   'coupon.attempted': {
     required: [
@@ -1144,6 +1545,7 @@ const EVENT_KEYS: Record<
       'status',
       'rejectionReason',
       'evidenceIds',
+      'coupon',
     ],
   },
   'evidence.captured': {
@@ -1151,8 +1553,11 @@ const EVENT_KEYS: Record<
   },
   'run.warning': {
     required: ['code', 'message', 'merchantAttemptId', 'evidenceIds'],
+    optional: ['requiresUserInput'],
   },
-  'control.claimed': { required: ['leaseId', 'holderUserId', 'expiresAt'] },
+  'control.claimed': {
+    required: ['leaseId', 'holderUserId', 'expiresAt', 'merchantAttemptId'],
+  },
   'control.renewed': { required: ['leaseId', 'expiresAt'] },
   'control.released': { required: ['leaseId', 'releasedAt', 'recovery'] },
   'control.lease_expired': { required: ['leaseId', 'expiredAt', 'recovery'] },
@@ -1196,11 +1601,11 @@ function assertEventPayload(
   type: EventType,
   payload: Record<string, unknown>,
 ): void {
-  const allowed = EVENT_KEYS[type].required;
+  const schema = EVENT_KEYS[type];
+  const allowed = [...schema.required, ...(schema.optional ?? [])];
   const keys = Object.keys(payload);
   if (
-    keys.length !== allowed.length ||
-    allowed.some((key) => !(key in payload)) ||
+    schema.required.some((key) => !(key in payload)) ||
     keys.some((key) => !allowed.includes(key))
   ) {
     invalidEvent(type);
@@ -1291,7 +1696,8 @@ function assertEventPayload(
           String(payload.validity),
         ) ||
         !isString(payload.merchantAttemptId) ||
-        !isStringArray(payload.evidenceIds, true)
+        !isStringArray(payload.evidenceIds, true) ||
+        (payload.offer !== undefined && !exactOfferEventData(payload.offer))
       )
         invalidEvent(type);
       break;
@@ -1303,7 +1709,8 @@ function assertEventPayload(
           String(payload.status),
         ) ||
         !nullableString(payload.rejectionReason) ||
-        !isStringArray(payload.evidenceIds, true)
+        !isStringArray(payload.evidenceIds, true) ||
+        !exactCouponEventData(payload.coupon)
       )
         invalidEvent(type);
       break;
@@ -1328,7 +1735,12 @@ function assertEventPayload(
         !isString(payload.code) ||
         !isString(payload.message) ||
         !nullableString(payload.merchantAttemptId) ||
-        !isStringArray(payload.evidenceIds)
+        !isStringArray(payload.evidenceIds) ||
+        (payload.requiresUserInput !== undefined &&
+          typeof payload.requiresUserInput !== 'boolean') ||
+        (payload.requiresUserInput === true &&
+          (!isString(payload.merchantAttemptId) ||
+            !USER_INPUT_WARNING_CODES.has(String(payload.code))))
       )
         invalidEvent(type);
       break;
@@ -1413,6 +1825,244 @@ function exactMerchant(value: unknown): boolean {
   );
 }
 
+function exactOfferEventData(value: unknown): boolean {
+  const keys = [
+    'availability',
+    'details',
+    'exclusionReason',
+    'incompleteFields',
+    'match',
+    'price',
+    'sourceUrl',
+    'title',
+  ];
+  if (
+    !hasExactKeys(value, keys) &&
+    !hasExactKeys(value, [...keys, 'observedAt'])
+  )
+    return false;
+  const offer = value as Record<string, unknown>;
+  const match = offer.match;
+  const price = offer.price;
+  return (
+    isString(offer.title) &&
+    isHttpUrl(offer.sourceUrl) &&
+    ['available', 'unavailable', 'unknown'].includes(
+      String(offer.availability),
+    ) &&
+    hasExactKeys(match, ['confidence', 'exact', 'explanation']) &&
+    typeof (match as Record<string, unknown>).exact === 'boolean' &&
+    typeof (match as Record<string, unknown>).confidence === 'number' &&
+    Number.isFinite((match as Record<string, unknown>).confidence) &&
+    Number((match as Record<string, unknown>).confidence) >= 0 &&
+    Number((match as Record<string, unknown>).confidence) <= 1 &&
+    isString((match as Record<string, unknown>).explanation) &&
+    exactOfferDetails(offer.details) &&
+    exactPriceBreakdown(price) &&
+    (offer.observedAt === undefined || isTimestamp(offer.observedAt)) &&
+    nullableString(offer.exclusionReason) &&
+    isStringArray(offer.incompleteFields)
+  );
+}
+
+function exactOfferDetails(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const details = value as Record<string, unknown>;
+  if (details.kind === 'retail')
+    return (
+      hasExactKeys(details, [
+        'brand',
+        'color',
+        'condition',
+        'deliveryEstimate',
+        'kind',
+        'model',
+        'quantity',
+        'size',
+        'storage',
+        'variant',
+      ]) &&
+      isString(details.brand) &&
+      isString(details.model) &&
+      [details.variant, details.storage, details.size, details.color].every(
+        nullableString,
+      ) &&
+      Number.isInteger(details.quantity) &&
+      Number(details.quantity) > 0 &&
+      details.condition === 'new' &&
+      nullableString(details.deliveryEstimate)
+    );
+  if (details.kind === 'food')
+    return (
+      hasExactKeys(details, [
+        'branchArea',
+        'deliveryEstimate',
+        'distanceKm',
+        'distanceText',
+        'kind',
+        'meal',
+        'minimumOrder',
+        'modifiers',
+        'optionalTipExcluded',
+        'priceScope',
+        'proximityBasis',
+        'rating',
+        'restaurant',
+        'size',
+        'sourceName',
+      ]) &&
+      isString(details.restaurant) &&
+      isString(details.meal) &&
+      nullableString(details.size) &&
+      isStringArray(details.modifiers) &&
+      nullableFiniteNumber(details.rating) &&
+      nullableMoney(details.minimumOrder) &&
+      nullableString(details.deliveryEstimate) &&
+      details.optionalTipExcluded === true &&
+      isString(details.sourceName) &&
+      nullableString(details.branchArea) &&
+      nullableFiniteNumber(details.distanceKm) &&
+      nullableString(details.distanceText) &&
+      ['route_distance', 'same_area', 'branch_area_only', 'unknown'].includes(
+        String(details.proximityBasis),
+      ) &&
+      ['menu_price', 'delivered_total'].includes(String(details.priceScope))
+    );
+  if (details.kind === 'cinema')
+    return (
+      hasExactKeys(details, [
+        'adjacentSeats',
+        'date',
+        'holdExpiresAt',
+        'kind',
+        'language',
+        'movie',
+        'screenFormat',
+        'seatCount',
+        'seatType',
+        'showtime',
+        'venue',
+      ]) &&
+      [
+        details.movie,
+        details.venue,
+        details.date,
+        details.showtime,
+        details.language,
+        details.screenFormat,
+        details.seatType,
+      ].every(isString) &&
+      Number.isInteger(details.seatCount) &&
+      Number(details.seatCount) > 0 &&
+      typeof details.adjacentSeats === 'boolean' &&
+      nullableString(details.holdExpiresAt)
+    );
+  return false;
+}
+
+function exactPriceBreakdown(value: unknown): boolean {
+  if (
+    !hasExactKeys(value, [
+      'bookingFee',
+      'deliveryFee',
+      'finalTotal',
+      'itemSubtotal',
+      'mandatoryFees',
+      'optionalTip',
+      'serviceFee',
+      'tax',
+      'verifiedDiscount',
+    ])
+  )
+    return false;
+  const price = value as Record<string, unknown>;
+  return (
+    isMoney(price.itemSubtotal) &&
+    [
+      price.deliveryFee,
+      price.serviceFee,
+      price.bookingFee,
+      price.tax,
+      price.finalTotal,
+    ].every(nullableMoney) &&
+    Array.isArray(price.mandatoryFees) &&
+    price.mandatoryFees.every(
+      (fee) =>
+        hasExactKeys(fee, ['amount', 'evidenceIds', 'label']) &&
+        isString((fee as Record<string, unknown>).label) &&
+        isMoney((fee as Record<string, unknown>).amount) &&
+        isStringArray((fee as Record<string, unknown>).evidenceIds),
+    ) &&
+    isMoney(price.verifiedDiscount) &&
+    (price.optionalTip === null || price.optionalTip === '0.00')
+  );
+}
+
+function exactCouponEventData(value: unknown): boolean {
+  if (
+    !hasExactKeys(value, [
+      'afterTotal',
+      'beforeTotal',
+      'code',
+      'message',
+      'sourceUrl',
+      'verifiedDiscount',
+    ])
+  )
+    return false;
+  const coupon = value as Record<string, unknown>;
+  return (
+    isString(coupon.code) &&
+    isHttpUrl(coupon.sourceUrl) &&
+    isMoney(coupon.beforeTotal) &&
+    nullableMoney(coupon.afterTotal) &&
+    isMoney(coupon.verifiedDiscount) &&
+    nullableString(coupon.message)
+  );
+}
+
+function hasExactKeys(value: unknown, keys: string[]): boolean {
+  return (
+    Boolean(value) &&
+    typeof value === 'object' &&
+    Object.keys(value as Record<string, unknown>)
+      .sort()
+      .join(',') === [...keys].sort().join(',')
+  );
+}
+
+function isMoney(value: unknown): boolean {
+  return typeof value === 'string' && /^\d+(?:\.\d{2})$/.test(value);
+}
+
+function nullableMoney(value: unknown): boolean {
+  return value === null || isMoney(value);
+}
+
+function nullableFiniteNumber(value: unknown): boolean {
+  return (
+    value === null || (typeof value === 'number' && Number.isFinite(value))
+  );
+}
+
+function isHttpUrl(value: unknown): boolean {
+  if (!isString(value)) return false;
+  try {
+    return ['http:', 'https:'].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function urlBelongsToDomain(value: string, domain: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  } catch {
+    return false;
+  }
+}
+
 function containsSecretKey(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsSecretKey);
   if (!value || typeof value !== 'object') return false;
@@ -1422,4 +2072,152 @@ function containsSecretKey(value: unknown): boolean {
         key,
       ) || containsSecretKey(item),
   );
+}
+function incompleteDetails(
+  category: ShoppingCategory,
+): Record<string, unknown> {
+  if (category === ShoppingCategory.Retail)
+    return {
+      kind: 'retail',
+      brand: '',
+      model: '',
+      variant: null,
+      storage: null,
+      size: null,
+      color: null,
+      quantity: 1,
+      condition: 'new',
+      deliveryEstimate: null,
+    };
+  if (category === ShoppingCategory.Food)
+    return {
+      kind: 'food',
+      restaurant: '',
+      meal: '',
+      size: null,
+      modifiers: [],
+      rating: null,
+      minimumOrder: null,
+      deliveryEstimate: null,
+      optionalTipExcluded: true,
+    };
+  return {
+    kind: 'cinema',
+    movie: '',
+    venue: '',
+    date: '1970-01-01',
+    showtime: '1970-01-01T00:00:00.000Z',
+    language: '',
+    screenFormat: '',
+    seatCount: 0,
+    adjacentSeats: false,
+    seatType: '',
+    holdExpiresAt: null,
+  };
+}
+
+function materializedOfferSnapshot(
+  value: unknown,
+  attempt: {
+    category: ShoppingCategory;
+    merchantDomain: string;
+  },
+  validity: string,
+  evidenceIds: string[],
+  timestamp: string,
+) {
+  if (!isObjectRecord(value)) return null;
+  const match = isObjectRecord(value.match) ? value.match : {};
+  const price = isObjectRecord(value.price) ? value.price : {};
+  const details = isObjectRecord(value.details)
+    ? value.details
+    : incompleteDetails(attempt.category);
+  const confidence = Number(match.confidence);
+  const mandatoryFees = Array.isArray(price.mandatoryFees)
+    ? price.mandatoryFees.filter(isObjectRecord).map((fee) => ({
+        label: safeText(fee.label, 'mandatory fee', 200),
+        amount: moneyText(fee.amount, '0.00')!,
+        evidenceIds: snapshotStringArray(fee.evidenceIds),
+      }))
+    : [];
+  const observedAt = isTimestamp(value.observedAt)
+    ? new Date(value.observedAt)
+    : new Date(timestamp);
+  const availability = ['available', 'unavailable', 'unknown'].includes(
+    String(value.availability),
+  )
+    ? (String(value.availability) as 'available' | 'unavailable' | 'unknown')
+    : 'unknown';
+  return {
+    title: safeText(value.title, 'Discovered offer', 1_000),
+    sourceUrl: safeText(
+      value.sourceUrl,
+      `https://${attempt.merchantDomain}/`,
+      4_000,
+    ),
+    match: {
+      exact: match.exact === true,
+      confidence: Number.isFinite(confidence)
+        ? Math.min(1, Math.max(0, confidence))
+        : 0,
+      explanation: safeText(
+        match.explanation,
+        'Compared with the user request.',
+        1_000,
+      ),
+    },
+    availability,
+    details,
+    price: {
+      itemSubtotal: moneyText(price.itemSubtotal, '0.00')!,
+      deliveryFee: moneyText(price.deliveryFee),
+      serviceFee: moneyText(price.serviceFee),
+      bookingFee: moneyText(price.bookingFee),
+      tax: moneyText(price.tax),
+      mandatoryFees,
+      verifiedDiscount: moneyText(price.verifiedDiscount, '0.00')!,
+      optionalTip:
+        attempt.category === ShoppingCategory.Food ? ('0.00' as const) : null,
+      finalTotal: moneyText(price.finalTotal),
+    },
+    observedAt,
+    exclusionReason:
+      validity === 'excluded'
+        ? safeText(
+            value.exclusionReason,
+            'Offer did not meet the parsed constraints.',
+            1_000,
+          )
+        : null,
+    incompleteFields: snapshotStringArray(value.incompleteFields),
+    evidenceIds,
+  };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function safeText(value: unknown, fallback: string, maxLength: number): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return (text || fallback).slice(0, maxLength);
+}
+
+function moneyText(
+  value: unknown,
+  fallback: string | null = null,
+): string | null {
+  return typeof value === 'string' && /^(?:0|[1-9]\d*)\.\d{2}$/.test(value)
+    ? value
+    : fallback;
+}
+
+function snapshotStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [
+        ...new Set(
+          value.filter((item): item is string => typeof item === 'string'),
+        ),
+      ]
+    : [];
 }

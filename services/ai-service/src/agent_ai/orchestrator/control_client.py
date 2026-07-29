@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -76,12 +78,25 @@ class ControlAPIClient:
             "timestamp": _timestamp(),
             "payload": payload,
         }
-        response = await self.client.post(
-            f"{self.base_url}/internal/v1/ai-events",
-            headers=self._headers,
-            json=body,
-        )
-        response.raise_for_status()
+        response: httpx.Response | None = None
+        for attempt in range(5):
+            response = await self.client.post(
+                f"{self.base_url}/internal/v1/ai-events",
+                headers=self._headers,
+                json=body,
+            )
+            if response.status_code not in {404, 409, 502, 503}:
+                break
+            await asyncio.sleep(0.05 * (2**attempt))
+        assert response is not None
+        if response.is_error:
+            try:
+                error_code = str(response.json().get("error", {}).get("code", "unknown"))
+            except (TypeError, ValueError):
+                error_code = "unknown"
+            raise RuntimeError(
+                f"Control API rejected {event_type} with HTTP {response.status_code} ({error_code})"
+            )
         return identifier
 
     async def resolve_secret(
@@ -107,6 +122,27 @@ class ControlAPIClient:
         if not isinstance(value, str) or not value:
             raise RuntimeError("Secret resolver returned no value")
         return value
+
+    async def upload_evidence(self, run_id: str, evidence_id: str, png: bytes) -> None:
+        response: httpx.Response | None = None
+        path = (
+            f"{self.base_url}/internal/v1/evidence/"
+            f"{quote(run_id, safe='')}/{quote(evidence_id, safe='')}"
+        )
+        for attempt in range(5):
+            response = await self.client.post(
+                path,
+                headers=self._headers,
+                files={"file": ("screenshot.png", png, "image/png")},
+            )
+            if response.status_code not in {404, 409, 502, 503}:
+                break
+            await asyncio.sleep(0.05 * (2**attempt))
+        assert response is not None
+        if response.is_error:
+            raise RuntimeError(
+                f"Control API rejected screenshot evidence with HTTP {response.status_code}"
+            )
 
     async def aclose(self) -> None:
         if self._owns_client:

@@ -10,7 +10,7 @@ import { CandidateCard } from '../components/CandidateCard';
 import { EvidenceGallery } from '../components/RunTimeline';
 import { LanguageToggle, SectionHeading } from '../components/ShoppingControls';
 import { formatEGP } from '../currency';
-import { presentOffers } from '../report';
+import { presentOffers, warningListKey } from '../report';
 import { getShoppingReport } from '../shopping.service';
 
 export function ShoppingReportScreen() {
@@ -234,9 +234,9 @@ export function ShoppingReportScreen() {
           {report.data.warnings.length ? (
             <Card>
               <SectionHeading title={t('warnings')} />
-              {report.data.warnings.map((warning) => (
+              {report.data.warnings.map((warning, index) => (
                 <Text
-                  key={`${warning.code}-${warning.message}`}
+                  key={warningListKey(warning, index)}
                   style={[
                     styles.itemBody,
                     textDirection,

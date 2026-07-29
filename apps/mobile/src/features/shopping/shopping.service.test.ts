@@ -1,16 +1,21 @@
 import { apiClient } from '@/api/client';
 import { clearTemporaryAddress, loadEgyptAddress } from './address';
 import {
+  ActiveShoppingRunError,
   approveDomains,
   claimControl,
   createShoppingRun,
   createViewerToken,
   eventWebSocketUrl,
   getRunEventHistory,
+  isActiveShoppingRunError,
+  isShoppingBrowserBusyError,
   normalizeRunResource,
+  replaceActiveShoppingRun,
   releaseControl,
   shareAddressAfterExplicitConsent,
   submitClarification,
+  ShoppingBrowserBusyError,
 } from './shopping.service';
 import { RunResource } from './types';
 
@@ -76,6 +81,90 @@ describe('canonical shopping service', () => {
         },
       },
     );
+  });
+
+  it('turns the active-run API contract into an actionable run ID', async () => {
+    post.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: {
+        status: 409,
+        data: {
+          error: {
+            code: 'ACTIVE_RUN_EXISTS',
+            details: [
+              {
+                field: 'runId',
+                code: 'ACTIVE_RUN',
+                message: run.id,
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    await expect(
+      createShoppingRun({
+        query: 'Start a new request',
+        category: 'retail',
+        locale: 'en-EG',
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<ActiveShoppingRunError>>({
+        runId: run.id,
+      }),
+    );
+  });
+
+  it('distinguishes a browser-busy response from a connection failure', async () => {
+    post.mockRejectedValueOnce({
+      isAxiosError: true,
+      response: { status: 429, data: { error: { code: 'BROWSER_BUSY' } } },
+    });
+
+    await expect(
+      createShoppingRun({
+        query: 'Start a new request',
+        category: 'retail',
+        locale: 'en-EG',
+      }),
+    ).rejects.toBeInstanceOf(ShoppingBrowserBusyError);
+  });
+
+  it('recognizes shopping errors created before an Expo hot reload', () => {
+    const active = Object.assign(new Error('ACTIVE_RUN_EXISTS'), {
+      name: 'ActiveShoppingRunError',
+      runId: run.id,
+    });
+    const busy = Object.assign(new Error('BROWSER_BUSY'), {
+      name: 'ShoppingBrowserBusyError',
+    });
+
+    expect(isActiveShoppingRunError(active)).toBe(true);
+    expect(isShoppingBrowserBusyError(busy)).toBe(true);
+    expect(isActiveShoppingRunError(busy)).toBe(false);
+    expect(isShoppingBrowserBusyError(new Error('network'))).toBe(false);
+  });
+
+  it('cancels the old run before creating its replacement', async () => {
+    const replacement = { ...run, id: 'run-02', query: 'New request' };
+    post
+      .mockResolvedValueOnce({ data: { run: { ...run, status: 'cancelled' } } })
+      .mockResolvedValueOnce({ data: { run: replacement } });
+
+    const created = await replaceActiveShoppingRun(run.id, {
+      query: replacement.query,
+      category: 'retail',
+      locale: 'en-EG',
+    });
+
+    expect(created.id).toBe(replacement.id);
+    expect(post.mock.calls[0][0]).toBe('/shopping/runs/run-01/control');
+    expect(post.mock.calls[0][1]).toEqual({
+      action: 'cancel',
+      reason: 'replaced_by_new_run',
+    });
+    expect(post.mock.calls[1][0]).toBe('/shopping/runs');
   });
 
   it('rejects an unknown status instead of defaulting it', () => {
@@ -201,7 +290,7 @@ describe('canonical shopping service', () => {
         data: { run, lease: { ...lease, status: 'released' } },
       });
 
-    await claimControl(run.id);
+    await claimControl(run.id, 'warning-1', 'attempt-1');
     await createViewerToken(run.id, 'control', lease.id);
     await releaseControl(run.id, lease.id);
 
@@ -210,6 +299,10 @@ describe('canonical shopping service', () => {
       '/shopping/runs/run-01/viewer-tokens',
       '/shopping/runs/run-01/control/release',
     ]);
+    expect(post.mock.calls[0][1]).toEqual({
+      requestId: 'warning-1',
+      merchantAttemptId: 'attempt-1',
+    });
     expect(post.mock.calls[1][1]).toEqual({
       mode: 'control',
       leaseId: 'lease-1',
@@ -224,6 +317,38 @@ describe('canonical shopping service', () => {
         tokenType: 'Bearer',
         mode: 'view',
         viewerUrl: 'http://localhost:8080/viewer/?token=viewer-secret',
+        expiresAt: run.browserExpiresAt,
+      },
+    });
+
+    await expect(createViewerToken(run.id, 'view')).rejects.toThrow(
+      'INVALID_VIEWER_TOKEN_RESPONSE',
+    );
+  });
+
+  it('aligns a local development viewer with the API host used by the website', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        token: 'viewer-secret',
+        tokenType: 'Bearer',
+        mode: 'view',
+        viewerUrl: 'http://192.168.1.9:8080/viewer/',
+        expiresAt: run.browserExpiresAt,
+      },
+    });
+
+    await expect(createViewerToken(run.id, 'view')).resolves.toMatchObject({
+      viewerUrl: 'http://localhost:8080/viewer/',
+    });
+  });
+
+  it('does not align an untrusted viewer origin in development', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        token: 'viewer-secret',
+        tokenType: 'Bearer',
+        mode: 'view',
+        viewerUrl: 'https://attacker.example/viewer/',
         expiresAt: run.browserExpiresAt,
       },
     });

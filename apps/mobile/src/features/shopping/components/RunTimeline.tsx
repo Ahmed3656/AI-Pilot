@@ -1,9 +1,10 @@
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Card } from '@/components';
-import { useAuth } from '@/contexts/AuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useLocalization } from '@/localization';
 import { EvidenceReference, EventEnvelope } from '../types';
+import { EvidenceScreenshot } from './EvidenceScreenshot';
 
 function eventMessage(event: EventEnvelope): string {
   switch (event.type) {
@@ -126,47 +127,93 @@ export function EvidenceGallery({
   evidence: EvidenceReference[];
 }) {
   const { theme } = useTheme();
-  const { accessToken } = useAuth();
   const { t, textDirection, locale } = useLocalization();
+  const [selected, setSelected] = useState<EvidenceReference | null>(null);
   return (
-    <View style={styles.gallery}>
-      {evidence.map((item) => (
-        <Card key={item.id}>
-          {item.kind === 'screenshot' ? (
-            <Image
-              accessibilityLabel={`${t('evidence')} ${item.id}`}
-              resizeMode="cover"
-              source={{
-                uri: item.uri,
-                ...(accessToken
-                  ? { headers: { Authorization: `Bearer ${accessToken}` } }
-                  : {}),
-              }}
-              style={styles.screenshot}
-            />
-          ) : null}
-          <Text
-            style={[
-              styles.merchant,
-              textDirection,
-              { color: theme.colors.text },
-            ]}
-          >
-            {item.kind} · {item.id}
-          </Text>
-          <Text
-            style={[textDirection, { color: theme.colors.muted, fontSize: 12 }]}
-          >
-            {new Intl.DateTimeFormat(locale, {
-              timeZone: 'Africa/Cairo',
-              dateStyle: 'medium',
-              timeStyle: 'short',
-            }).format(new Date(item.capturedAt))}{' '}
-            · {t('redactedEvidence')}
-          </Text>
-        </Card>
-      ))}
-    </View>
+    <>
+      <View style={styles.gallery}>
+        {evidence.map((item) => (
+          <Card key={item.id}>
+            {item.kind === 'screenshot' ? (
+              <Pressable
+                accessibilityHint={t('openScreenshotHint')}
+                accessibilityLabel={`${t('openScreenshot')} ${item.id}`}
+                accessibilityRole="button"
+                onPress={() => setSelected(item)}
+                style={styles.screenshotButton}
+              >
+                <EvidenceScreenshot
+                  accessibilityLabel={`${t('evidence')} ${item.id}`}
+                  uri={item.uri}
+                />
+              </Pressable>
+            ) : null}
+            <Text
+              style={[
+                styles.merchant,
+                textDirection,
+                { color: theme.colors.text },
+              ]}
+            >
+              {item.kind} · {item.id}
+            </Text>
+            <Text
+              style={[
+                textDirection,
+                { color: theme.colors.muted, fontSize: 12 },
+              ]}
+            >
+              {new Intl.DateTimeFormat(locale, {
+                timeZone: 'Africa/Cairo',
+                dateStyle: 'medium',
+                timeStyle: 'short',
+              }).format(new Date(item.capturedAt))}{' '}
+              · {t('redactedEvidence')}
+            </Text>
+          </Card>
+        ))}
+      </View>
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setSelected(null)}
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        transparent
+        visible={selected !== null}
+      >
+        <View
+          accessibilityViewIsModal
+          style={styles.lightbox}
+          testID="evidence-lightbox"
+        >
+          <View style={styles.lightboxHeader}>
+            <Text
+              numberOfLines={1}
+              style={[styles.lightboxTitle, { color: '#ffffff' }]}
+            >
+              {selected ? `${t('evidence')} · ${selected.id}` : t('evidence')}
+            </Text>
+            <Pressable
+              accessibilityLabel={t('close')}
+              accessibilityRole="button"
+              onPress={() => setSelected(null)}
+              style={styles.closeButton}
+            >
+              <Text style={styles.closeText}>×</Text>
+            </Pressable>
+          </View>
+          <View style={styles.lightboxImage}>
+            {selected ? (
+              <EvidenceScreenshot
+                accessibilityLabel={`${t('evidence')} ${selected.id}`}
+                expanded
+                uri={selected.uri}
+              />
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -179,6 +226,29 @@ const styles = StyleSheet.create({
   eventTitle: { flex: 1, fontSize: 14, fontWeight: '800' },
   message: { fontSize: 13, lineHeight: 19 },
   gallery: { gap: 10 },
-  screenshot: { width: '100%', height: 190, borderRadius: 10 },
+  screenshotButton: { borderRadius: 10, overflow: 'hidden' },
   merchant: { fontSize: 14, fontWeight: '800' },
+  lightbox: {
+    flex: 1,
+    backgroundColor: 'rgba(3, 7, 18, 0.96)',
+    padding: 16,
+  },
+  lightboxHeader: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  lightboxTitle: { flex: 1, fontSize: 15, fontWeight: '800' },
+  closeButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+  },
+  closeText: { color: '#ffffff', fontSize: 32, lineHeight: 36 },
+  lightboxImage: { flex: 1, minHeight: 0 },
 });

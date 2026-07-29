@@ -7,10 +7,11 @@ import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from uuid import uuid4
 
 from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 
@@ -26,27 +27,41 @@ from agent_ai.browser.safety import (
     is_address_field,
     is_seat_hold_element,
 )
-from agent_ai.models import ApprovalType, Category, RunStatus
+from agent_ai.models import ApprovalType, Category, PauseReason, RunStatus
 
 _SECRET_PATTERN = re.compile(r"\{\{secret:([a-zA-Z0-9]+)}}")
 
 _ELEMENT_AT_POINT = """
 const leaf = document.elementFromPoint(arguments[0], arguments[1]);
 if (!leaf) return null;
-const selector = 'button, a, input, [role="button"], [role="link"], [type="submit"]';
+const selector = [
+  'button', 'a', 'input', 'select', 'textarea', 'label', 'summary',
+  '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="option"]',
+  '[role="menuitem"]', '[role="radio"]', '[role="switch"]', '[role="tab"]',
+  '[onclick]', '[contenteditable="true"]', '[tabindex]:not([tabindex="-1"])'
+].join(', ');
 const control = leaf.closest(selector) || leaf;
 const form = control.closest('form');
+const tag = control.tagName.toLowerCase();
+const role = (control.getAttribute('role') || '').toLowerCase();
+const style = window.getComputedStyle(control);
+const interactiveTags = ['button', 'a', 'input', 'select', 'textarea', 'label', 'summary'];
+const interactive = interactiveTags.includes(tag) ||
+  ['button', 'link', 'checkbox', 'option', 'menuitem', 'radio', 'switch', 'tab'].includes(role) ||
+  control.hasAttribute('onclick') || control.tabIndex >= 0 || style.cursor === 'pointer';
 const text = (control.innerText || control.value || control.textContent || '').slice(0, 1000);
 const childText = Array.from(control.querySelectorAll('[aria-label], [title], img[alt], svg title'))
   .map((el) => [el.getAttribute('aria-label'), el.getAttribute('title'),
     el.getAttribute('alt'), el.textContent].filter(Boolean).join(' '))
   .join(' ').slice(0, 1000);
 return {
-  tag: control.tagName.toLowerCase(),
+  tag,
   leaf_tag: leaf.tagName.toLowerCase(),
   text,
   child_text: childText,
   role: control.getAttribute('role'),
+  interactive,
+  disabled: control.matches(':disabled') || control.getAttribute('aria-disabled') === 'true',
   type: control.getAttribute('type'),
   name: control.getAttribute('name'),
   value: control.getAttribute('value'),
@@ -80,6 +95,86 @@ return {
   form_method: form ? (form.method || 'get') : null,
   form_text: form ? (form.innerText || form.textContent || '').slice(0, 2000) : null
 };
+"""
+
+_VISIBLE_SENSITIVE_PAYMENT_CONTROL = """
+const markers = [
+  'card number', 'credit card', 'debit card', 'cvv', 'cvc',
+  'expiry', 'expiration', 'wallet number', 'رقم البطاقة', 'رمز الأمان'
+];
+return Array.from(document.querySelectorAll('input, textarea, select')).some((el) => {
+  const style = window.getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  if (el.hidden || style.display === 'none' || style.visibility === 'hidden' ||
+      Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) return false;
+  const autocomplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+  const metadata = [
+    el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('aria-label'),
+    el.getAttribute('placeholder'), el.getAttribute('title')
+  ].filter(Boolean).join(' ').toLowerCase();
+  return autocomplete.startsWith('cc-') || markers.some((marker) => metadata.includes(marker));
+});
+"""
+
+_VISIBLE_LOGIN_CONTROL = """
+const contextMarkers = [
+  'sign in', 'log in', 'sign up', 'create account', 'welcome to jumia',
+  "let's get started", 'mobile number or email', 'email or mobile number',
+  'phone number or email', 'email or phone number'
+];
+return Array.from(document.querySelectorAll('input')).some((el) => {
+  const style = window.getComputedStyle(el);
+  const rect = el.getBoundingClientRect();
+  if (el.hidden || style.display === 'none' || style.visibility === 'hidden' ||
+      Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) return false;
+  if ((el.getAttribute('type') || '').toLowerCase() === 'password') return true;
+  const container = el.closest('form, [role="dialog"], [aria-modal="true"]');
+  const fieldText = [
+    el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('aria-label'),
+    el.getAttribute('placeholder'), el.getAttribute('title')
+  ].filter(Boolean).join(' ').toLowerCase();
+  const context = container
+    ? (container.innerText || container.textContent || '').toLowerCase().slice(0, 5000)
+    : '';
+  return contextMarkers.some((marker) => fieldText.includes(marker) || context.includes(marker));
+});
+"""
+
+_VISIBLE_CAPTCHA_CHALLENGE = """
+const visible = (el) => {
+  if (!el || el.hidden) return false;
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
+      rect.top >= window.innerHeight || rect.left >= window.innerWidth) return false;
+  for (let node = el; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' ||
+        Number(style.opacity) === 0) return false;
+  }
+  return true;
+};
+const challengeSelectors = [
+  '.g-recaptcha', '.h-captcha', '.cf-turnstile',
+  '[data-hcaptcha-widget-id]',
+  'iframe[title*="recaptcha challenge" i]',
+  'iframe[src*="hcaptcha.com/captcha" i]',
+  'iframe[src*="challenges.cloudflare.com" i]',
+  'input[name*="captcha" i]', 'img[alt*="captcha" i]'
+];
+if (challengeSelectors.some((selector) =>
+  Array.from(document.querySelectorAll(selector)).some(visible))) return true;
+const humanPrompts = [
+  'verify you are human', 'verify that you are human', "i'm not a robot",
+  'complete the security check', 'performing security verification',
+  'أنا لست برنامج روبوت', 'تحقق من أنك إنسان'
+];
+return Array.from(document.querySelectorAll(
+  'h1, h2, h3, p, label, button, [role="alert"], [role="dialog"]'
+)).some((el) => {
+  if (!visible(el)) return false;
+  const text = (el.innerText || el.textContent || '').toLowerCase();
+  return humanPrompts.some((marker) => text.includes(marker));
+});
 """
 
 _MASK_PAGE = """
@@ -158,6 +253,8 @@ class EventSink(Protocol):
         status: RunStatus | None = None,
     ) -> None: ...
 
+    async def upload_evidence(self, run_id: str, evidence_id: str, png: bytes) -> None: ...
+
 
 ApprovalRequester = Callable[[ApprovalType, dict[str, Any]], Awaitable[bool]]
 PauseRequester = Callable[[PauseRequired], Awaitable[None]]
@@ -165,6 +262,19 @@ ActiveWaiter = Callable[[], Awaitable[None]]
 StatusGetter = Callable[[], RunStatus]
 DomainsGetter = Callable[[], Iterable[str]]
 MerchantAttemptGetter = Callable[[], str | None]
+
+
+class VisualFallbackRequired(RuntimeError):
+    """A changed or stale UI target must be re-located from a fresh screenshot."""
+
+
+class WorkflowBoundaryReached(RuntimeError):
+    """An expected comparison boundary was reached without requiring user repair."""
+
+    def __init__(self, boundary: str, reason: str) -> None:
+        self.boundary = boundary
+        self.reason = reason
+        super().__init__(reason)
 
 
 @dataclass(slots=True)
@@ -214,6 +324,7 @@ class SeleniumRemoteBrowser:
         self.tabs: dict[str, str] = {}
         self.expected_domain: str | None = None
         self._safe_urls: dict[str, str] = {}
+        self._test_fixture_domain: str | None = None
 
     @property
     def session_id(self) -> str | None:
@@ -225,6 +336,10 @@ class SeleniumRemoteBrowser:
         options = webdriver.ChromeOptions()
         options.add_argument("--disable-notifications")
         options.add_argument("--window-size=1280,800")
+        # Product pages often keep loading analytics and media long after the DOM is
+        # interactive. Returning at DOMContentLoaded avoids blocking every navigation
+        # on those non-essential requests; the agent can still wait for dynamic content.
+        options.page_load_strategy = "eager"
         self.driver = self._driver_factory(command_executor=self.remote_url, options=options)
         if hasattr(self.driver, "set_window_size"):
             self.driver.set_window_size(1280, 800)
@@ -236,6 +351,36 @@ class SeleniumRemoteBrowser:
             self.tabs.clear()
             self._safe_urls.clear()
             self.expected_domain = None
+            self._test_fixture_domain = None
+
+    def focus_for_takeover(self) -> None:
+        """Bring this WebDriver window forward before granting human input."""
+        if self.driver is None:
+            raise SafetyViolation("Merchant browser is not connected")
+        handle = self.driver.current_window_handle
+        self.driver.switch_to.window(handle)
+        self.driver.execute_script("window.focus()")
+
+    def load_deterministic_test_fixture(
+        self,
+        domain: str,
+        category: Category,
+        approved_domains: Iterable[str],
+    ) -> None:
+        """Load inert HTML in the real browser for the explicit test adapter only."""
+        if domain not in approved_domains:
+            raise SafetyViolation("Test fixture domain is not approved")
+        self.connect()
+        assert self.driver is not None
+        self.expected_domain = domain
+        self._test_fixture_domain = domain
+        html = (
+            "<!doctype html><html><head><title>DealPilot deterministic test merchant</title>"
+            "</head><body><main><h1>Deterministic integration fixture</h1>"
+            f"<p data-domain='{domain}' data-category='{category.value}'>"
+            "No purchase or booking controls are present.</p></main></body></html>"
+        )
+        self.driver.get(f"data:text/html;charset=utf-8,{quote(html)}")
 
     def navigate(
         self,
@@ -304,7 +449,18 @@ class SeleniumRemoteBrowser:
                     expected_domain=self.expected_domain,
                     approved_domains=approved,
                 )
-            inspect_page_for_pause(self.driver.page_source, self.driver.current_url)
+            visible_sensitive_control = bool(
+                self.driver.execute_script(_VISIBLE_SENSITIVE_PAYMENT_CONTROL)
+            )
+            visible_login_control = bool(self.driver.execute_script(_VISIBLE_LOGIN_CONTROL))
+            visible_captcha_challenge = bool(self.driver.execute_script(_VISIBLE_CAPTCHA_CHALLENGE))
+            inspect_page_for_pause(
+                self.driver.page_source,
+                self.driver.current_url,
+                visible_sensitive_control=visible_sensitive_control,
+                visible_login_control=visible_login_control,
+                visible_captcha_challenge=visible_captcha_challenge,
+            )
             self._safe_urls[handle] = self.driver.current_url
             self.tabs.setdefault(domain, handle)
         if origin in self.driver.window_handles:
@@ -346,6 +502,8 @@ class SeleniumRemoteBrowser:
         allow_blank: bool,
     ) -> str:
         assert self.driver is not None
+        if self._test_fixture_domain and self.driver.current_url.startswith("data:text/html"):
+            return self._test_fixture_domain
         if allow_blank and self.driver.current_url == "about:blank":
             return self.expected_domain or ""
         return assert_allowed_url(
@@ -435,6 +593,42 @@ class SeleniumRemoteBrowser:
         assert self.driver is not None
         self.driver.execute_script("window.scrollBy(arguments[0], arguments[1])", delta_x, delta_y)
 
+    def visible_text(self, max_chars: int) -> dict[str, Any]:
+        """Read rendered text and visible links without exposing markup or browser storage."""
+        assert self.driver is not None
+        limit = min(max(max_chars, 1_000), 30_000)
+        result = self.driver.execute_script(
+            """
+            const body = document.body;
+            const text = body ? (body.innerText || body.textContent || '') : '';
+            const links = Array.from(document.querySelectorAll('a[href]'))
+              .filter((link) => {
+                const rect = link.getBoundingClientRect();
+                const style = window.getComputedStyle(link);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' &&
+                  style.display !== 'none';
+              })
+              .map((link) => ({
+                label: (link.innerText || link.getAttribute('aria-label') ||
+                  link.getAttribute('title') || '').trim().slice(0, 300),
+                url: link.href
+              }))
+              .filter((link) => link.label && link.url)
+              .slice(0, 80);
+            return {
+              url: window.location.href,
+              title: document.title || '',
+              text: text.slice(0, arguments[0]),
+              truncated: text.length > arguments[0],
+              links
+            };
+            """,
+            limit,
+        )
+        if not isinstance(result, dict):
+            raise SafetyViolation("Rendered page text could not be read")
+        return result
+
     def masked_screenshot(self, secrets: tuple[str, ...]) -> bytes:
         """Return a native-resolution PNG after recursive same-origin DOM redaction."""
         assert self.driver is not None
@@ -473,6 +667,7 @@ class BrowserActionExecutor:
         merchant_attempt_getter: MerchantAttemptGetter | None = None,
         action_lock: asyncio.Lock | None = None,
         redactor: SecretRedactor | None = None,
+        allow_login_takeover: bool = True,
     ) -> None:
         self.browser = browser
         self.category = category
@@ -487,9 +682,12 @@ class BrowserActionExecutor:
         self.merchant_attempt_getter = merchant_attempt_getter or (lambda: None)
         self.action_lock = action_lock or asyncio.Lock()
         self.redactor = redactor or SecretRedactor()
+        self.allow_login_takeover = allow_login_takeover
         self.evidence_ids: list[str] = []
         self.evidence_by_attempt: dict[str, list[str]] = {}
         self._last_screenshot: str | None = None
+        self._last_screenshot_hash: str | None = None
+        self._last_screenshot_attempt_id: str | None = None
 
     @property
     def approved_domains(self) -> frozenset[str]:
@@ -497,6 +695,10 @@ class BrowserActionExecutor:
             self._approved_domains() if callable(self._approved_domains) else self._approved_domains
         )
         return frozenset(value)
+
+    @property
+    def last_screenshot(self) -> str | None:
+        return self._last_screenshot
 
     async def execute(self, action: Mapping[str, Any]) -> str:
         await self.wait_until_active()
@@ -541,26 +743,43 @@ class BrowserActionExecutor:
                     raise SafetyViolation(f"Unsupported computer action: {kind}")
                 await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
         except PauseRequired as exc:
+            self._raise_expected_boundary(exc)
             await self._pause_safely(exc)
-            if self._last_screenshot is None:
-                raise SafetyViolation(
-                    "Safety pause occurred before a safe screenshot was captured"
-                ) from exc
-            return self._last_screenshot
+            return await self.capture(action=f"{kind}_after_human")
+        except SafetyViolation as exc:
+            pause = PauseRequired(PauseReason.BROWSER_WARNING, str(exc))
+            await self._pause_safely(pause)
+            return await self.capture(action=f"{kind}_after_human")
         return await self.capture(action=kind)
 
     async def capture(self, *, action: str = "observe") -> str:
         await self.wait_until_active()
-        async with self.action_lock:
-            await self.wait_until_active()
-            await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
-            png = await asyncio.to_thread(self.browser.masked_screenshot, self.redactor.values)
+        try:
+            async with self.action_lock:
+                await self.wait_until_active()
+                await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
+                png = await asyncio.to_thread(self.browser.masked_screenshot, self.redactor.values)
+        except PauseRequired as exc:
+            self._raise_expected_boundary(exc)
+            await self._pause_safely(exc)
+            return await self.capture(action=action)
+        attempt_id = self.merchant_attempt_getter()
+        screenshot_hash = screenshot_sha256(png)
+        if (
+            self._last_screenshot is not None
+            and screenshot_hash == self._last_screenshot_hash
+            and attempt_id == self._last_screenshot_attempt_id
+        ):
+            return self._last_screenshot
+
         screenshot = base64.b64encode(png).decode("ascii")
         evidence_id = f"evidence:{uuid4()}"
         self.evidence_ids.append(evidence_id)
-        attempt_id = self.merchant_attempt_getter()
         if attempt_id:
             self.evidence_by_attempt.setdefault(attempt_id, []).append(evidence_id)
+        upload_evidence = getattr(self.event_sink, "upload_evidence", None)
+        if upload_evidence is not None:
+            await upload_evidence(self.run_id, evidence_id, png)
         await self.event_sink.emit(
             self.run_id,
             "evidence.captured",
@@ -573,15 +792,55 @@ class BrowserActionExecutor:
             status=self.status_getter(),
         )
         self._last_screenshot = f"data:image/png;base64,{screenshot}"
+        self._last_screenshot_hash = screenshot_hash
+        self._last_screenshot_attempt_id = attempt_id
         return self._last_screenshot
 
-    async def _pause_safely(self, exc: PauseRequired) -> None:
+    async def read_page_text(self, *, max_chars: int = 20_000) -> dict[str, Any]:
+        """Return redacted rendered text after applying the same page safety guard."""
+        await self.wait_until_active()
         try:
-            await asyncio.to_thread(
-                self.browser.recover_last_safe, self.category, self.approved_domains
-            )
-        except (PauseRequired, SafetyViolation):
-            pass
+            async with self.action_lock:
+                await self.wait_until_active()
+                await asyncio.to_thread(self.browser.guard, self.category, self.approved_domains)
+                page = await asyncio.to_thread(self.browser.visible_text, max_chars)
+        except PauseRequired as exc:
+            self._raise_expected_boundary(exc)
+            await self._pause_safely(exc)
+            return await self.read_page_text(max_chars=max_chars)
+        links: list[dict[str, str]] = []
+        for value in page.get("links", []):
+            if not isinstance(value, Mapping):
+                continue
+            url = self.redactor.mask(str(value.get("url", "")))
+            try:
+                assert_allowed_url(
+                    url,
+                    self.category,
+                    approved_domains=self.approved_domains,
+                )
+            except SafetyViolation:
+                continue
+            label = self.redactor.mask(str(value.get("label", ""))).strip()
+            if label:
+                links.append({"label": label, "url": url})
+        return {
+            "url": safe_url_for_event(str(page.get("url", "")), self.redactor),
+            "title": self.redactor.mask(str(page.get("title", ""))),
+            "text": self.redactor.mask(str(page.get("text", ""))),
+            "truncated": page.get("truncated") is True,
+            "links": links,
+            "untrustedPageData": True,
+        }
+
+    async def _pause_safely(self, exc: PauseRequired) -> None:
+        if not exc.preserve_page:
+            try:
+                await asyncio.to_thread(
+                    self.browser.recover_last_safe, self.category, self.approved_domains
+                )
+            except (PauseRequired, SafetyViolation):
+                pass
         if self.pause_requester is None:
             await self.event_sink.emit(
                 self.run_id,
@@ -600,9 +859,36 @@ class BrowserActionExecutor:
     async def pause_for_safety(self, exc: PauseRequired) -> None:
         await self._pause_safely(exc)
 
+    def _raise_expected_boundary(self, exc: PauseRequired) -> None:
+        if exc.reason_code is PauseReason.BROWSER_WARNING and exc.reason.startswith(
+            "Payment details page detected"
+        ):
+            raise WorkflowBoundaryReached("payment", exc.reason) from exc
+        if not self.allow_login_takeover and exc.reason_code in {
+            PauseReason.LOGIN,
+            PauseReason.ONE_TIME_CODE,
+        }:
+            raise WorkflowBoundaryReached("authentication", exc.reason) from exc
+
     async def _click(self, action: Mapping[str, Any], *, double: bool) -> None:
         x, y = int(action["x"]), int(action["y"])
-        metadata = await asyncio.to_thread(self.browser.metadata_at, x, y)
+        try:
+            metadata = await asyncio.to_thread(self.browser.metadata_at, x, y)
+        except SafetyViolation as exc:
+            raise VisualFallbackRequired(
+                "The click coordinates no longer point to a page element."
+            ) from exc
+        if metadata.get("disabled") is True:
+            raise VisualFallbackRequired("The requested control is currently disabled.")
+        if metadata.get("interactive") is False:
+            raise VisualFallbackRequired(
+                "The click coordinates no longer point to an interactive control."
+            )
+        target = str(action.get("target", "")).strip()
+        if target and not _interaction_target_matches(target, metadata):
+            raise VisualFallbackRequired(
+                f"The click coordinates no longer match the requested {target!r} control."
+            )
         assert_not_card_field(metadata)
         assert_not_final_action(metadata)
         assert_navigation_metadata_allowed(metadata, self.category, self.approved_domains)
@@ -623,13 +909,18 @@ class BrowserActionExecutor:
             )
             if not approved:
                 raise SafetyViolation("Seat-hold approval was denied; no seat was selected")
-        await asyncio.to_thread(
-            self.browser.click,
-            x,
-            y,
-            double=double,
-            button=str(action.get("button", "left")),
-        )
+        try:
+            await asyncio.to_thread(
+                self.browser.click,
+                x,
+                y,
+                double=double,
+                button=str(action.get("button", "left")),
+            )
+        except (WebDriverException, SafetyViolation) as exc:
+            raise VisualFallbackRequired(
+                "The page changed before the requested control could be clicked."
+            ) from exc
         if creates_hold:
             hold_expiry = await asyncio.to_thread(self.browser.find_hold_expiry) or hold_expiry
             evidence_id = f"evidence:{uuid4()}"
@@ -689,6 +980,32 @@ class BrowserActionExecutor:
 
 async def _noop_wait() -> None:
     return None
+
+
+_TARGET_NOISE_WORDS = frozenset({"a", "an", "the", "button", "control", "icon", "link", "option"})
+
+
+def _interaction_target_matches(target: str, metadata: Mapping[str, Any]) -> bool:
+    target_text = " ".join(target.casefold().split())
+    metadata_text = " ".join(
+        str(metadata.get(key, "")).casefold()
+        for key in ("text", "child_text", "aria_label", "leaf_aria_label", "title", "value")
+        if metadata.get(key)
+    )
+    metadata_text = " ".join(metadata_text.split())
+    if not target_text or not metadata_text:
+        return False
+    if target_text in metadata_text or metadata_text in target_text:
+        return True
+    target_words = {
+        word for word in re.findall(r"[\w-]+", target_text) if word not in _TARGET_NOISE_WORDS
+    }
+    metadata_words = {
+        word for word in re.findall(r"[\w-]+", metadata_text) if word not in _TARGET_NOISE_WORDS
+    }
+    return bool(target_words and metadata_words) and (
+        target_words.issubset(metadata_words) or metadata_words.issubset(target_words)
+    )
 
 
 def safe_url_for_event(url: str, redactor: SecretRedactor) -> str:

@@ -14,6 +14,7 @@ const envFile = join(phase1Directory, '.env');
 const action = process.argv[2] ?? 'help';
 const profile =
   argumentValue('--profile') ?? process.env.DEALPILOT_PROFILE ?? 'local-only';
+const testAdapter = process.argv.includes('--test-adapter');
 const supportedProfiles = new Set(['local-only', 'cloud-tunnel']);
 const noAiActions = new Set([
   'build',
@@ -28,18 +29,25 @@ const noAiActions = new Set([
 ]);
 
 if (!supportedProfiles.has(profile)) fail(`Unsupported profile: ${profile}`);
+if (testAdapter && profile !== 'local-only')
+  fail('The deterministic test adapter is local-only.');
 
 if (action === 'help') {
   console.log(
-    'Usage: node scripts/phase1.mjs <config|build|start|stop|logs|migrate|health|smoke|ps|clean> [--profile local-only|cloud-tunnel]',
+    'Usage: node scripts/phase1.mjs <config|build|start|stop|logs|migrate|health|smoke|ps|clean> [--profile local-only|cloud-tunnel] [--test-adapter]',
   );
   process.exit(0);
 }
 
 const configuration = ensureLocalEnvironment();
 const runtimeEnvironment = { ...configuration, ...process.env };
-if (noAiActions.has(action) && !runtimeEnvironment.AI_OPENAI_API_KEY) {
-  runtimeEnvironment.AI_OPENAI_API_KEY = 'not-used-by-this-command';
+if (testAdapter) {
+  runtimeEnvironment.AI_ENVIRONMENT = 'test';
+  runtimeEnvironment.AI_OPENROUTER_API_KEY =
+    'deterministic-test-adapter-not-a-live-openrouter-key';
+}
+if (noAiActions.has(action) && !runtimeEnvironment.AI_OPENROUTER_API_KEY) {
+  runtimeEnvironment.AI_OPENROUTER_API_KEY = 'not-used-by-this-command';
 }
 validateConfiguration(runtimeEnvironment, action, profile);
 verifyDocker();
@@ -67,7 +75,11 @@ switch (action) {
   case 'start':
     runDocker(['config', '--quiet']);
     runDocker(['up', '-d', '--build', '--wait']);
-    runPowerShell('Test-Phase1Health.ps1');
+    runCheck('health');
+    if (testAdapter)
+      console.log(
+        'TEST ADAPTER ACTIVE: deterministic Selenium data; this is not a live merchant/OpenRouter run.',
+      );
     console.log(
       'DealPilot Egypt MVP is ready at the configured loopback gateway.',
     );
@@ -84,10 +96,10 @@ switch (action) {
     console.log('Database migrations completed.');
     break;
   case 'health':
-    runPowerShell('Test-Phase1Health.ps1');
+    runCheck('health');
     break;
   case 'smoke':
-    runPowerShell('Invoke-Phase1Smoke.ps1');
+    runCheck('smoke');
     break;
   case 'ps':
     runDocker(['ps']);
@@ -120,7 +132,17 @@ function ensureLocalEnvironment() {
       'Created an ignored infra/phase1/.env with random local service secrets.',
     );
   }
-  return parseEnvironment(readFileSync(envFile, 'utf8'));
+  const current = readFileSync(envFile, 'utf8');
+  const migrated = current
+    .replace(/^AI_OPENAI_API_KEY=/m, 'AI_OPENROUTER_API_KEY=')
+    .replace(/^AI_MODEL=gpt-5\.6$/m, 'AI_MODEL=openai/gpt-5.2');
+  if (migrated !== current) {
+    writeFileSync(envFile, migrated, { encoding: 'utf8', mode: 0o600 });
+    console.log(
+      'Migrated the ignored Phase 1 environment from OpenAI to OpenRouter names.',
+    );
+  }
+  return parseEnvironment(migrated);
 }
 
 function replaceEnvironmentValues(source, replacements) {
@@ -186,10 +208,10 @@ function validateConfiguration(environment, currentAction, currentProfile) {
   }
   if (
     !noAiActions.has(currentAction) &&
-    (environment.AI_OPENAI_API_KEY ?? '').length < 20
+    (environment.AI_OPENROUTER_API_KEY ?? '').length < 20
   ) {
     fail(
-      'Set AI_OPENAI_API_KEY in the current shell or ignored infra/phase1/.env before starting the live MVP.',
+      'Set AI_OPENROUTER_API_KEY in ignored infra/phase1/.env before starting the live MVP.',
     );
   }
   if (currentProfile === 'cloud-tunnel' && currentAction === 'start') {
@@ -231,23 +253,17 @@ function runDocker(argumentsList) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-function runPowerShell(scriptName) {
-  const executable = process.platform === 'win32' ? 'powershell.exe' : 'pwsh';
+function runCheck(check) {
   const result = spawnSync(
-    executable,
+    process.execPath,
     [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      join(phase1Directory, scriptName),
-      '-Profile',
+      join(repositoryRoot, 'scripts', 'phase1-check.mjs'),
+      check,
+      '--profile',
       profile,
     ],
     { cwd: repositoryRoot, env: runtimeEnvironment, stdio: 'inherit' },
   );
-  if (result.error?.code === 'ENOENT')
-    fail(`${executable} is required for Phase 1 health and smoke checks.`);
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
@@ -266,7 +282,7 @@ async function streamRedactedLogs(localConfiguration) {
     localConfiguration.JWT_SECRET,
     localConfiguration.INTERNAL_TOKEN,
     localConfiguration.VIEWER_TOKEN_SECRET,
-    runtimeEnvironment.AI_OPENAI_API_KEY,
+    runtimeEnvironment.AI_OPENROUTER_API_KEY,
     runtimeEnvironment.CLOUDFLARE_TUNNEL_TOKEN,
   ];
   for (const stream of [child.stdout, child.stderr]) {

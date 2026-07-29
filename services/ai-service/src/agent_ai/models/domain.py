@@ -113,11 +113,14 @@ class Candidate:
     title: str
     url: str
     money: MoneyBreakdown
+    offer_id: str | None = None
     exact_match: bool = True
+    match_confidence: float = 0.0
     valid: bool = True
     details: dict[str, Any] = field(default_factory=dict)
     evidence_ids: tuple[str, ...] = ()
     incomplete_reason: str | None = None
+    exclusion_reason: str | None = None
 
 
 @dataclass(slots=True)

@@ -6,6 +6,15 @@ export interface PresentedOffer {
   isWinner: boolean;
 }
 
+export function warningListKey(
+  warning: RunReport['warnings'][number],
+  index: number,
+): string {
+  // Reports preserve every warning event, but warning records have no ID.
+  // Include the occurrence so identical retry warnings remain distinct rows.
+  return `${index}:${warning.code}:${warning.message}`;
+}
+
 export function presentOffers(report: RunReport): PresentedOffer[] {
   const winnerId = report.conclusion?.winnerOfferId ?? null;
   return [

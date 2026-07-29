@@ -4,4 +4,5 @@ export interface JwtPayload {
   roles?: string[];
   permissions?: string[];
   tokenType: 'access' | 'refresh';
+  refreshVersion?: number;
 }

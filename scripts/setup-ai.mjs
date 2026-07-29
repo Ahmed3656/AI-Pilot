@@ -39,7 +39,22 @@ if (!existsSync(venvPython)) {
 }
 
 if (
-  !run(venvPython, ['-m', 'pip', 'install', '-e', 'services/ai-service[dev]'])
+  !run(venvPython, [
+    '-m',
+    'pip',
+    'install',
+    '--require-hashes',
+    '-r',
+    'services/ai-service/requirements-dev.lock.txt',
+  ]) ||
+  !run(venvPython, [
+    '-m',
+    'pip',
+    'install',
+    '--no-deps',
+    '-e',
+    'services/ai-service',
+  ])
 ) {
   process.exit(1);
 }

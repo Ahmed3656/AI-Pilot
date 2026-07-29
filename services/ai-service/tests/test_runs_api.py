@@ -184,6 +184,13 @@ def test_second_active_run_gets_explicit_busy_retry_response(monkeypatch: Any) -
     assert response.headers["Retry-After"] == "7"
     assert response.json()["error"]["code"] == "RATE_LIMITED"
     assert "busy" in response.json()["error"]["message"]
+    assert response.json()["error"]["details"] == [
+        {
+            "field": "runId",
+            "code": "ACTIVE_RUN",
+            "message": "active-run",
+        }
+    ]
 
 
 def test_command_safety_rejection_and_dependency_failure_use_contract_errors(

@@ -102,6 +102,15 @@ export type PendingAction =
       merchantDomain: string;
       holdDurationSeconds: number | null;
     }
+  | {
+      type: 'browser_takeover';
+      requestId: string;
+      merchantAttemptId: string;
+      merchantName: string;
+      merchantDomain: string;
+      reasonCode: string;
+      message: string;
+    }
   | { type: 'handoff'; requestId: string };
 
 export interface MerchantCatalogEntry {
@@ -135,6 +144,30 @@ export const EGYPT_MERCHANTS: readonly MerchantCatalogEntry[] = [
     name: 'Noon Egypt',
     domain: 'noon.com',
     category: ShoppingCategory.Retail,
+    market: 'EG',
+    currency: 'EGP',
+  },
+  {
+    id: 'google-maps-eg',
+    name: 'Google Maps',
+    domain: 'google.com',
+    category: ShoppingCategory.Food,
+    market: 'EG',
+    currency: 'EGP',
+  },
+  {
+    id: 'menu-egypt',
+    name: 'Menu Egypt',
+    domain: 'menuegypt.com',
+    category: ShoppingCategory.Food,
+    market: 'EG',
+    currency: 'EGP',
+  },
+  {
+    id: 'elmenus-eg',
+    name: 'elmenus',
+    domain: 'elmenus.com',
+    category: ShoppingCategory.Food,
     market: 'EG',
     currency: 'EGP',
   },

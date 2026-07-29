@@ -1,4 +1,6 @@
+import { isAxiosError } from 'axios';
 import { apiClient } from '@/api/client';
+import { isLocalDevelopmentOrigin } from '@/config/api-origin';
 import { environment } from '@/config/environment';
 import {
   clearTemporaryAddress,
@@ -21,6 +23,52 @@ import {
 } from './types';
 
 const RUNS_PATH = '/shopping/runs';
+
+interface ContractErrorResponse {
+  error?: {
+    code?: string;
+    details?: {
+      field?: string | null;
+      code?: string;
+      message?: string;
+    }[];
+  };
+}
+
+export class ActiveShoppingRunError extends Error {
+  constructor(readonly runId: string) {
+    super('ACTIVE_RUN_EXISTS');
+    this.name = 'ActiveShoppingRunError';
+  }
+}
+
+export class ShoppingBrowserBusyError extends Error {
+  constructor() {
+    super('BROWSER_BUSY');
+    this.name = 'ShoppingBrowserBusyError';
+  }
+}
+
+export function isActiveShoppingRunError(
+  error: unknown,
+): error is ActiveShoppingRunError {
+  return (
+    error instanceof ActiveShoppingRunError ||
+    (error instanceof Error &&
+      error.name === 'ActiveShoppingRunError' &&
+      typeof (error as Partial<ActiveShoppingRunError>).runId === 'string')
+  );
+}
+
+export function isShoppingBrowserBusyError(
+  error: unknown,
+): error is ShoppingBrowserBusyError {
+  return (
+    error instanceof ShoppingBrowserBusyError ||
+    (error instanceof Error && error.name === 'ShoppingBrowserBusyError')
+  );
+}
+
 const EVENT_TYPES: EventType[] = [
   'run.created',
   'run.clarification_required',
@@ -113,13 +161,40 @@ function unwrapRun(data: { run: unknown }): RunResource {
   return normalizeRunResource(data.run);
 }
 
+function apiContractError(error: unknown): ContractErrorResponse | null {
+  if (!isAxiosError<ContractErrorResponse>(error)) return null;
+  const data = error.response?.data;
+  return data && typeof data === 'object' ? data : null;
+}
+
 export async function createShoppingRun(
   request: CreateShoppingRunRequest,
 ): Promise<RunResource> {
-  const { data } = await apiClient.post<{ run: unknown }>(RUNS_PATH, request, {
-    headers: mutationHeaders(),
-  });
-  return unwrapRun(data);
+  try {
+    const { data } = await apiClient.post<{ run: unknown }>(
+      RUNS_PATH,
+      request,
+      {
+        headers: mutationHeaders(),
+      },
+    );
+    return unwrapRun(data);
+  } catch (error) {
+    const contract = apiContractError(error);
+    if (contract?.error?.code === 'ACTIVE_RUN_EXISTS') {
+      const runId = contract.error.details?.find(
+        (detail) => detail.field === 'runId' && detail.code === 'ACTIVE_RUN',
+      )?.message;
+      if (runId) throw new ActiveShoppingRunError(runId);
+    }
+    if (
+      contract?.error?.code === 'BROWSER_BUSY' ||
+      contract?.error?.code === 'RATE_LIMITED'
+    ) {
+      throw new ShoppingBrowserBusyError();
+    }
+    throw error;
+  }
 }
 
 export async function getShoppingRun(runId: string): Promise<RunResource> {
@@ -252,8 +327,28 @@ export async function sendRunAction(
   return unwrapRun(data);
 }
 
+export async function replaceActiveShoppingRun(
+  activeRunId: string,
+  request: CreateShoppingRunRequest,
+): Promise<RunResource> {
+  try {
+    await sendRunAction(activeRunId, 'cancel', 'replaced_by_new_run');
+  } catch (cancelError) {
+    const current = await getShoppingRun(activeRunId).catch(() => null);
+    if (
+      !current ||
+      !['completed', 'cancelled', 'failed'].includes(current.status)
+    ) {
+      throw cancelError;
+    }
+  }
+  return createShoppingRun(request);
+}
+
 export async function claimControl(
   runId: string,
+  requestId: string,
+  merchantAttemptId: string,
   requestedLeaseSeconds?: number,
 ): Promise<{ run: RunResource; lease: ControlLease }> {
   const { data } = await apiClient.post<{
@@ -261,7 +356,11 @@ export async function claimControl(
     lease: ControlLease;
   }>(
     `${RUNS_PATH}/${encodeURIComponent(runId)}/control/claim`,
-    requestedLeaseSeconds ? { requestedLeaseSeconds } : {},
+    {
+      requestId,
+      merchantAttemptId,
+      ...(requestedLeaseSeconds ? { requestedLeaseSeconds } : {}),
+    },
     { headers: mutationHeaders() },
   );
   return { run: unwrapRun(data), lease: data.lease };
@@ -307,6 +406,19 @@ export async function createViewerToken(
     { headers: mutationHeaders() },
   );
   const viewerUrl = new URL(data.viewerUrl);
+  const apiOrigin = new URL(environment.apiOrigin);
+  if (
+    viewerUrl.origin !== apiOrigin.origin &&
+    environment.isDevelopment &&
+    isLocalDevelopmentOrigin(viewerUrl.origin) &&
+    isLocalDevelopmentOrigin(apiOrigin.origin)
+  ) {
+    // One development gateway serves both the API and /viewer. The API's
+    // advertised LAN origin is correct for phones, while a website opened on
+    // localhost must use localhost so its SameSite viewer cookie is sent.
+    viewerUrl.protocol = apiOrigin.protocol;
+    viewerUrl.host = apiOrigin.host;
+  }
   if (
     data.mode !== mode ||
     data.tokenType !== 'Bearer' ||
@@ -318,7 +430,7 @@ export async function createViewerToken(
   ) {
     throw new Error('INVALID_VIEWER_TOKEN_RESPONSE');
   }
-  return data;
+  return { ...data, viewerUrl: viewerUrl.toString() };
 }
 
 export async function getRunEventHistory(

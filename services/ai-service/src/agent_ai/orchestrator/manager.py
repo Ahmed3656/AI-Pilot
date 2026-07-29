@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable
+import logging
+from collections.abc import AsyncIterator, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
+from urllib.parse import quote_plus
 from uuid import uuid4
 
 from agent_ai.browser import (
@@ -28,7 +32,8 @@ from agent_ai.models import (
 )
 from agent_ai.orchestrator.classification import clarification_message, classify_request
 from agent_ai.orchestrator.control_client import ControlAPIClient
-from agent_ai.providers.openai_responses import OpenAIComputerAgent
+from agent_ai.providers.deterministic_test import DeterministicProviderTestAdapter
+from agent_ai.providers.openrouter_responses import OpenRouterComputerAgent
 from agent_ai.schemas.runs import (
     CommandName,
     InternalCommandRequest,
@@ -36,11 +41,18 @@ from agent_ai.schemas.runs import (
     InternalCreateRunRequest,
     InternalCreateRunResponse,
 )
-from agent_ai.workflows import validate_agent_result
+from agent_ai.vision import GeminiVisionFallbackLocator, VisionFallbackLocator
+from agent_ai.workflows import (
+    fallback_request_understanding,
+    normalize_request_understanding,
+    validate_agent_result,
+)
+
+logger = logging.getLogger("uvicorn.error")
 
 
 class ComputerAgent(Protocol):
-    previous_response_id: str | None
+    last_response_id: str | None
 
     async def run(
         self,
@@ -50,6 +62,7 @@ class ComputerAgent(Protocol):
         executor: BrowserActionExecutor,
         address_handle: str | None = None,
         discovery_sink: Callable[[str, dict[str, Any]], Any] | None = None,
+        request_understanding: dict[str, Any] | None = None,
     ) -> str: ...
 
 
@@ -57,7 +70,7 @@ class RunBusyError(RuntimeError):
     def __init__(self, active_run_id: str, retry_after: int = 5) -> None:
         self.active_run_id = active_run_id
         self.retry_after = retry_after
-        super().__init__("The single MVP browser is busy with another active run")
+        super().__init__("The merchant browser pool is busy with another active run")
 
 
 class IdempotencyConflictError(RuntimeError):
@@ -86,13 +99,25 @@ class MerchantAttempt:
 
 
 @dataclass(slots=True)
+class MerchantWorker:
+    domain: str
+    attempt: MerchantAttempt
+    browser: SeleniumRemoteBrowser
+    agent: ComputerAgent
+    executor: BrowserActionExecutor | None = None
+    action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
 class RunRecord:
     request: InternalCreateRunRequest
     category: Category | None
     status: RunStatus
     browser_expires_at: datetime
-    browser: SeleniumRemoteBrowser
-    agent: ComputerAgent
+    browser: SeleniumRemoteBrowser | None = None
+    agent: ComputerAgent | None = None
     clarification_request_id: str | None = None
     domain_request_id: str | None = None
     address_request_id: str | None = None
@@ -107,6 +132,7 @@ class RunRecord:
     partial_coupons: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[dict[str, Any]] = field(default_factory=list)
     attempts: dict[str, MerchantAttempt] = field(default_factory=dict)
+    workers: dict[str, MerchantWorker] = field(default_factory=dict)
     resume_status: RunStatus | None = None
     error: str | None = None
     closed: bool = False
@@ -114,12 +140,16 @@ class RunRecord:
     domains_event: asyncio.Event = field(default_factory=asyncio.Event)
     seat_future: asyncio.Future[bool] | None = None
     action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pause_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     command_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     task: asyncio.Task[None] | None = None
     ttl_task: asyncio.Task[None] | None = None
     executor: BrowserActionExecutor | None = None
+    request_understanding: dict[str, Any] = field(default_factory=dict)
     emitted_offer_ids: set[str] = field(default_factory=set)
     emitted_coupon_ids: set[str] = field(default_factory=set)
+    emitted_offer_fingerprints: dict[str, str] = field(default_factory=dict)
+    emitted_coupon_fingerprints: dict[str, str] = field(default_factory=dict)
 
     @property
     def run_id(self) -> str:
@@ -132,16 +162,40 @@ _START_URLS: dict[Category, dict[str, str]] = {
         "jumia.com.eg": "https://www.jumia.com.eg/",
         "noon.com": "https://www.noon.com/egypt-en/",
     },
-    Category.FOOD: {"talabat.com": "https://www.talabat.com/egypt"},
+    Category.FOOD: {
+        "google.com": "https://www.google.com/maps/search/restaurants+in+Egypt",
+        "menuegypt.com": "https://www.menuegypt.com/menus/all",
+        "elmenus.com": "https://www.elmenus.com/menu",
+        "talabat.com": "https://www.talabat.com/egypt",
+    },
     Category.CINEMA: {"voxcinemas.com": "https://egy.voxcinemas.com/"},
+}
+
+_RETAIL_SEARCH_URLS = {
+    "amazon.eg": "https://www.amazon.eg/s?k={query}",
+    "jumia.com.eg": "https://www.jumia.com.eg/catalog/?q={query}",
+    "noon.com": "https://www.noon.com/egypt-en/search?q={query}",
 }
 
 _MERCHANT_NAMES = {
     "amazon.eg": "Amazon Egypt",
     "jumia.com.eg": "Jumia Egypt",
     "noon.com": "Noon Egypt",
+    "google.com": "Google Maps",
+    "menuegypt.com": "Menu Egypt",
+    "elmenus.com": "elmenus",
     "talabat.com": "Talabat Egypt",
     "voxcinemas.com": "VOX Egypt",
+}
+_MERCHANT_IDS = {
+    "amazon.eg": "amazon-eg",
+    "jumia.com.eg": "jumia-eg",
+    "noon.com": "noon-eg",
+    "google.com": "google-maps-eg",
+    "menuegypt.com": "menu-egypt",
+    "elmenus.com": "elmenus-eg",
+    "talabat.com": "talabat-eg",
+    "voxcinemas.com": "vox-eg",
 }
 
 _ADDRESS_FIELDS = {
@@ -155,6 +209,13 @@ _ADDRESS_FIELDS = {
     "apartment",
     "landmark",
     "postalCode",
+}
+
+_USER_INPUT_PAUSE_REASONS = {
+    PauseReason.LOGIN,
+    PauseReason.ONE_TIME_CODE,
+    PauseReason.CAPTCHA,
+    PauseReason.BROWSER_WARNING,
 }
 _COUPON_STATUSES = {"rejected", "not_tested", "technical_failure"}
 _COUPON_REJECTION_REASONS = {
@@ -172,14 +233,25 @@ _COUPON_REJECTION_REASONS = {
 }
 
 
+def _merchant_start_url(record: RunRecord, domain: str) -> str:
+    assert record.category is not None
+    if record.category is not Category.RETAIL:
+        return _START_URLS[record.category][domain]
+    fallback = fallback_request_understanding(record.request.query, record.category)
+    search_query = str(record.request_understanding.get("search_query") or fallback["search_query"])
+    return _RETAIL_SEARCH_URLS[domain].format(query=quote_plus(search_query))
+
+
 class ScopedSecretResolver:
     def __init__(
         self,
         record: RunRecord,
         control: ControlAPIClient,
+        browser: SeleniumRemoteBrowser,
     ) -> None:
         self.record = record
         self.control = control
+        self.browser = browser
 
     async def resolve_secret(self, handle: str, run_id: str) -> str:
         if handle not in _ADDRESS_FIELDS:
@@ -193,7 +265,7 @@ class ScopedSecretResolver:
             self.record.address_handle = None
             self.record.address_domains.clear()
             raise PauseRequired(PauseReason.ADDRESS_CONSENT, "Address grant has expired")
-        merchant_domain = self.record.browser.expected_domain
+        merchant_domain = self.browser.expected_domain
         if not merchant_domain or merchant_domain not in self.record.address_domains:
             raise SafetyViolation("Address grant is not scoped to the active merchant domain")
         return await self.control.resolve_secret(
@@ -202,6 +274,24 @@ class ScopedSecretResolver:
             merchant_domain,
             handle,
         )
+
+
+class SerializedControlClient:
+    """Keep concurrent merchant events in one deterministic control-plane order."""
+
+    def __init__(self, control: ControlAPIClient) -> None:
+        self.control = control
+        self.event_lock = asyncio.Lock()
+
+    async def emit(self, *args: Any, **kwargs: Any) -> str:
+        async with self.event_lock:
+            return await self.control.emit(*args, **kwargs)
+
+    async def resolve_secret(self, *args: Any, **kwargs: Any) -> str:
+        return await self.control.resolve_secret(*args, **kwargs)
+
+    async def upload_evidence(self, *args: Any, **kwargs: Any) -> None:
+        await self.control.upload_evidence(*args, **kwargs)
 
 
 class RunManager:
@@ -214,7 +304,7 @@ class RunManager:
         browser_factory: Callable[[], SeleniumRemoteBrowser] | None = None,
     ) -> None:
         self.settings = settings
-        self.control = control
+        self.control = SerializedControlClient(control)
         self.agent_factory = agent_factory or self._default_agent
         self.browser_factory = browser_factory or (
             lambda: SeleniumRemoteBrowser(settings.selenium_remote_url)
@@ -226,12 +316,27 @@ class RunManager:
         self._active_run_id: str | None = None
 
     def _default_agent(self) -> ComputerAgent:
-        if not self.settings.openai_api_key:
-            raise RuntimeError("AI_OPENAI_API_KEY is not configured")
-        return OpenAIComputerAgent(
-            api_key=self.settings.openai_api_key,
+        if self.settings.environment == "test":
+            return DeterministicProviderTestAdapter()
+        if not self.settings.openrouter_api_key:
+            raise RuntimeError("AI_OPENROUTER_API_KEY is not configured")
+        vision_locator: VisionFallbackLocator | None = None
+        if self.settings.vision_fallback_provider == "gemini":
+            if not self.settings.gemini_api_key:
+                raise RuntimeError("AI_GEMINI_API_KEY is not configured")
+            vision_locator = GeminiVisionFallbackLocator(
+                api_key=self.settings.gemini_api_key,
+                model=self.settings.gemini_vision_model,
+                timeout_seconds=self.settings.request_timeout_seconds,
+            )
+        return OpenRouterComputerAgent(
+            api_key=self.settings.openrouter_api_key,
             model=self.settings.model,
             max_steps=self.settings.max_computer_steps,
+            max_visual_retries=self.settings.max_visual_retries,
+            vision_fallback_model=self.settings.vision_fallback_model or self.settings.model,
+            vision_locator=vision_locator,
+            timeout_seconds=self.settings.request_timeout_seconds,
         )
 
     async def create_run(
@@ -260,11 +365,6 @@ class RunManager:
             status = RunStatus.DISCOVERING if category else RunStatus.CLARIFYING
             browser = self.browser_factory()
             agent = self.agent_factory()
-            try:
-                await asyncio.to_thread(browser.connect)
-            except Exception:
-                await asyncio.to_thread(browser.close)
-                raise
             record = RunRecord(
                 request=request,
                 category=category,
@@ -392,7 +492,7 @@ class RunManager:
         elif command.name is CommandName.APPROVE_SEAT_HOLD:
             await self._approve_seat_hold(record, payload)
         elif command.name is CommandName.PAUSE:
-            await self._pause_command(record, str(payload["reason"]))
+            await self._pause_command(record, payload)
         elif command.name is CommandName.RESUME:
             await self._resume_command(record, str(payload["reason"]))
         elif command.name is CommandName.CANCEL:
@@ -405,14 +505,28 @@ class RunManager:
     async def _clarify(self, record: RunRecord, payload: dict[str, Any]) -> None:
         if record.status is not RunStatus.CLARIFYING:
             raise InvalidTransitionError("clarify is not expected")
-        if payload["requestId"] != record.clarification_request_id:
-            raise InvalidTransitionError("Stale clarification requestId")
+        # The public API owns the user-facing pending action and validates its
+        # requestId before forwarding this authenticated internal command. The
+        # AI service emits its clarification event asynchronously after create,
+        # so its locally generated ID can legitimately differ from the API ID.
+        # Treat the control plane as authoritative here; status and command
+        # idempotency still reject stale or replayed clarification commands.
+        record.clarification_request_id = str(payload["requestId"])
         answers = payload["answers"]
-        answer_text = " ".join(
-            value if isinstance(value, str) else " ".join(str(item) for item in value)
-            for value in answers.values()
+        category_answer = answers.get("category")
+        category_value = (
+            category_answer[0] if isinstance(category_answer, list) else category_answer
         )
-        category = classify_request(answer_text)
+        try:
+            category = Category(category_value) if isinstance(category_value, str) else None
+        except ValueError:
+            category = None
+        if category is None:
+            answer_text = " ".join(
+                value if isinstance(value, str) else " ".join(str(item) for item in value)
+                for value in answers.values()
+            )
+            category = classify_request(answer_text)
         if category is None:
             raise ValueError("Clarification did not resolve retail, food, or cinema")
         record.category = category
@@ -465,26 +579,45 @@ class RunManager:
             raise InvalidTransitionError("No seat-hold approval is pending")
         future.set_result(True)
 
-    async def _pause_command(self, record: RunRecord, reason: str) -> None:
-        if record.status is RunStatus.PAUSED:
-            return
+    async def _pause_command(self, record: RunRecord, payload: dict[str, Any]) -> None:
+        reason = str(payload["reason"])
         if reason == "control_claim":
-            if record.status is not RunStatus.READY_FOR_HANDOFF:
-                raise InvalidTransitionError("control claim requires ready_for_handoff")
+            if record.status is not RunStatus.PAUSED:
+                raise InvalidTransitionError("control claim requires a user-input pause")
+            merchant_attempt_id = str(payload["merchantAttemptId"])
+            merchant_domain = str(payload["merchantDomain"])
+            worker = record.workers.get(merchant_domain)
+            if worker is None or worker.attempt.id != merchant_attempt_id:
+                raise InvalidTransitionError("Control claim merchant target is not active")
             record.active_event.clear()
-            async with record.action_lock:
+            async with self._all_action_locks(record):
+                await asyncio.to_thread(worker.browser.focus_for_takeover)
                 record.status = RunStatus.USER_TAKEOVER
+            return
+        if record.status is RunStatus.PAUSED:
             return
         record.resume_status = record.status
         record.active_event.clear()
-        async with record.action_lock:
+        async with self._all_action_locks(record):
             record.status = RunStatus.PAUSED
+
+    @staticmethod
+    @asynccontextmanager
+    async def _all_action_locks(record: RunRecord) -> AsyncIterator[None]:
+        locks = [worker.action_lock for worker in record.workers.values()]
+        if not locks:
+            locks = [record.action_lock]
+        async with AsyncExitStack() as stack:
+            for lock in locks:
+                await stack.enter_async_context(lock)
+            yield
 
     async def _resume_command(self, record: RunRecord, reason: str) -> None:
         if reason in {"control_release", "lease_expired"}:
             if record.status is not RunStatus.USER_TAKEOVER:
                 raise InvalidTransitionError("Control release requires user_takeover")
-            record.status = RunStatus.READY_FOR_HANDOFF
+            record.status = record.resume_status or RunStatus.READY_FOR_HANDOFF
+            record.resume_status = None
             record.active_event.set()
             return
         if record.status is not RunStatus.PAUSED:
@@ -497,61 +630,51 @@ class RunManager:
 
     async def _execute(self, record: RunRecord) -> None:
         try:
+            # Admission must return before the comparatively slow Selenium
+            # session startup. The API persists the accepted run first; all
+            # browser work and any resulting failure are reported by this
+            # background task through canonical run events.
+            assert record.browser is not None
+            await asyncio.gather(
+                self._understand_request(record),
+                asyncio.to_thread(record.browser.connect),
+            )
             await self._request_domains(record)
             await record.domains_event.wait()
             if record.status in TERMINAL_STATUSES:
                 return
             record.status = RunStatus.COMPARING
-            await self._open_approved_merchants(record)
-            if not any(not attempt.completed for attempt in record.attempts.values()):
+            await self._run_approved_merchants(record)
+            if record.status in TERMINAL_STATUSES:
+                return
+            successful_results = [
+                worker.result for worker in record.workers.values() if worker.result is not None
+            ]
+            if not successful_results and not record.partial_offers:
                 await self._fail(record, "NO_MERCHANT_AVAILABLE", retryable=True)
                 return
             assert record.category is not None
-            executor = BrowserActionExecutor(
-                record.browser,
-                category=record.category,
-                run_id=record.run_id,
-                event_sink=self.control,
-                secret_resolver=ScopedSecretResolver(record, self.control),
-                approval_requester=lambda approval_type, details: self._request_approval(
-                    record, approval_type, details
-                ),
-                approved_domains=lambda: record.approved_domains,
-                pause_requester=lambda exc: self._pause_for_safety(record, exc),
-                wait_until_active=record.active_event.wait,
-                status_getter=lambda: record.status,
-                merchant_attempt_getter=lambda: _attempt_id(record, record.browser.expected_domain),
-                action_lock=record.action_lock,
-            )
-            record.executor = executor
-            raw = await record.agent.run(
-                query=record.request.query,
-                category=record.category,
-                executor=executor,
-                address_handle=record.address_handle,
-                discovery_sink=lambda kind, data: self._record_discovery(record, kind, data),
-            )
-            await record.active_event.wait()
-            raw = _attach_evidence(raw, executor.evidence_ids)
-            record.result = validate_agent_result(
-                record.category,
-                raw,
-                approved_domains=record.approved_domains,
-            )
+            record.result = self._merge_merchant_results(record)
             await self._emit_final_discoveries(record)
             await self._complete_attempts(record)
-            record.status = RunStatus.READY_FOR_HANDOFF
             await self.control.emit(
                 record.run_id,
                 "report.updated",
                 _report_counts(record),
-                status=RunStatus.READY_FOR_HANDOFF,
+                status=record.status,
             )
+            await self._transition(record, RunStatus.READY_FOR_HANDOFF)
         except asyncio.CancelledError:
             if record.status not in TERMINAL_STATUSES:
                 raise
         except Exception as exc:
             record.error = self._redact_error(record, exc)
+            logger.error(
+                "AI run failed run_id=%s error_type=%s error=%s",
+                record.run_id,
+                type(exc).__name__,
+                record.error,
+            )
             if record.partial_offers:
                 record.warnings.append(
                     {
@@ -568,7 +691,6 @@ class RunManager:
                     "coupon_attempts": record.partial_coupons,
                     "partial": True,
                 }
-                record.status = RunStatus.READY_FOR_HANDOFF
                 await self.control.emit(
                     record.run_id,
                     "run.warning",
@@ -578,15 +700,25 @@ class RunManager:
                         "merchantAttemptId": None,
                         "evidenceIds": [],
                     },
-                    status=RunStatus.READY_FOR_HANDOFF,
+                    status=record.status,
                 )
                 await self.control.emit(
                     record.run_id,
                     "report.updated",
                     _report_counts(record),
-                    status=RunStatus.READY_FOR_HANDOFF,
+                    status=record.status,
                 )
+                await self._transition(record, RunStatus.READY_FOR_HANDOFF)
             else:
+                try:
+                    await self._complete_attempts(record, failure_code="AI_RUN_FAILED")
+                except Exception as attempt_exc:
+                    logger.error(
+                        "AI run attempt finalization failed run_id=%s error_type=%s error=%s",
+                        record.run_id,
+                        type(attempt_exc).__name__,
+                        self._redact_error(record, attempt_exc),
+                    )
                 await self._fail(record, "AI_RUN_FAILED", retryable=True)
 
     async def _request_domains(self, record: RunRecord) -> None:
@@ -595,7 +727,7 @@ class RunManager:
         record.status = RunStatus.AWAITING_DOMAIN_APPROVAL
         candidates = [
             {
-                "id": f"merchant:{domain}",
+                "id": _MERCHANT_IDS[domain],
                 "name": _MERCHANT_NAMES[domain],
                 "domain": domain,
                 "category": record.category.value,
@@ -611,48 +743,254 @@ class RunManager:
             status=RunStatus.AWAITING_DOMAIN_APPROVAL,
         )
 
-    async def _open_approved_merchants(self, record: RunRecord) -> None:
+    async def _understand_request(self, record: RunRecord) -> None:
         assert record.category is not None
+        fallback = fallback_request_understanding(record.request.query, record.category)
+        understand = getattr(record.agent, "understand_request", None)
+        if not callable(understand):
+            record.request_understanding = fallback
+            return
+        try:
+            value = await understand(query=record.request.query, category=record.category)
+        except Exception as exc:
+            logger.warning(
+                "Request understanding fell back run_id=%s error_type=%s",
+                record.run_id,
+                type(exc).__name__,
+            )
+            value = fallback
+        record.request_understanding = normalize_request_understanding(
+            value,
+            user_query=record.request.query,
+            category=record.category,
+        )
+
+    async def _run_approved_merchants(self, record: RunRecord) -> None:
+        assert record.category is not None
+        workers: list[MerchantWorker] = []
         for domain in ALLOWED_DOMAINS[record.category]:
             if domain not in record.approved_domains:
                 continue
             attempt = MerchantAttempt(id=f"attempt:{uuid4()}", domain=domain, started=True)
             record.attempts[domain] = attempt
+            first_worker = not workers
+            browser = (
+                record.browser
+                if first_worker and record.browser is not None
+                else self.browser_factory()
+            )
+            agent = (
+                record.agent if first_worker and record.agent is not None else self.agent_factory()
+            )
+            worker = MerchantWorker(
+                domain=domain,
+                attempt=attempt,
+                browser=browser,
+                agent=agent,
+            )
+            record.workers[domain] = worker
+            if record.browser is None:
+                record.browser = worker.browser
+                record.agent = worker.agent
+            workers.append(worker)
             await self.control.emit(
                 record.run_id,
                 "merchant.attempt_started",
                 {
                     "attemptId": attempt.id,
-                    "merchantId": f"merchant:{domain}",
+                    "merchantId": _MERCHANT_IDS[domain],
                     "merchantDomain": domain,
                     "category": record.category.value,
                 },
                 status=RunStatus.COMPARING,
             )
-            try:
+
+        tasks = [
+            asyncio.create_task(
+                self._run_merchant(record, worker),
+                name=f"dealpilot-merchant-{record.run_id}-{worker.domain}",
+            )
+            for worker in workers
+        ]
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        for worker, outcome in zip(workers, outcomes, strict=True):
+            if not isinstance(outcome, BaseException):
+                continue
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome
+            worker.error = self._redact_exception(record, outcome, worker.executor)
+            logger.error(
+                "Merchant worker escaped failure boundary run_id=%s merchant=%s "
+                "error_type=%s error=%s",
+                record.run_id,
+                worker.domain,
+                type(outcome).__name__,
+                worker.error,
+            )
+            await self._finish_attempt(
+                record,
+                worker.attempt,
+                "failed",
+                "MERCHANT_RUN_FAILED",
+            )
+
+    async def _run_merchant(self, record: RunRecord, worker: MerchantWorker) -> None:
+        assert record.category is not None
+        try:
+            if worker.browser is not record.browser:
+                await asyncio.to_thread(worker.browser.connect)
+            if self.settings.environment == "test":
                 await asyncio.to_thread(
-                    record.browser.navigate,
-                    _START_URLS[record.category][domain],
+                    worker.browser.load_deterministic_test_fixture,
+                    worker.domain,
                     record.category,
-                    record.approved_domains,
-                    separate_tab=record.category is Category.RETAIL,
+                    {worker.domain},
                 )
-            except PauseRequired as exc:
-                await self._pause_for_safety(record, exc)
-                await self._finish_attempt(record, attempt, "safety_paused", exc.reason_code.value)
-            except Exception as exc:
-                await self._finish_attempt(record, attempt, "failed", type(exc).__name__.upper())
-                await self.control.emit(
-                    record.run_id,
-                    "run.warning",
-                    {
-                        "code": "MERCHANT_NAVIGATION_FAILED",
-                        "message": f"{_MERCHANT_NAMES[domain]} could not be opened.",
-                        "merchantAttemptId": attempt.id,
-                        "evidenceIds": [],
-                    },
-                    status=RunStatus.COMPARING,
-                )
+            else:
+                await self._navigate_merchant(record, worker)
+            if record.status in TERMINAL_STATUSES:
+                return
+            executor = BrowserActionExecutor(
+                worker.browser,
+                category=record.category,
+                run_id=record.run_id,
+                event_sink=self.control,
+                secret_resolver=ScopedSecretResolver(record, self.control, worker.browser),
+                approval_requester=lambda approval_type, details: self._request_approval(
+                    record, approval_type, details
+                ),
+                approved_domains={worker.domain},
+                pause_requester=lambda exc: self._pause_for_safety(
+                    record, exc, browser=worker.browser
+                ),
+                wait_until_active=record.active_event.wait,
+                status_getter=lambda: record.status,
+                merchant_attempt_getter=lambda: worker.attempt.id,
+                action_lock=worker.action_lock,
+                allow_login_takeover=bool(record.request_understanding.get("requires_checkout")),
+            )
+            worker.executor = executor
+            if record.executor is None:
+                record.executor = executor
+            raw = await worker.agent.run(
+                query=record.request.query,
+                category=record.category,
+                executor=executor,
+                address_handle=record.address_handle,
+                discovery_sink=lambda kind, data: self._record_discovery(
+                    record,
+                    kind,
+                    data,
+                    merchant_domain=worker.domain,
+                ),
+                request_understanding=record.request_understanding,
+            )
+            await record.active_event.wait()
+            raw = _attach_evidence(raw, executor.evidence_ids)
+            worker.result = validate_agent_result(
+                record.category,
+                raw,
+                approved_domains={worker.domain},
+                query=record.request.query,
+            )
+            for candidate in worker.result.get("candidates", []):
+                candidate["merchant"] = worker.domain
+            for coupon in worker.result.get("coupon_attempts", []):
+                coupon["merchant"] = worker.domain
+            await self._finish_attempt(record, worker.attempt, "succeeded", None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            worker.error = self._redact_exception(record, exc, worker.executor)
+            logger.warning(
+                "Merchant worker failed run_id=%s merchant=%s error_type=%s error=%s",
+                record.run_id,
+                worker.domain,
+                type(exc).__name__,
+                worker.error,
+            )
+            await self._finish_attempt(
+                record,
+                worker.attempt,
+                "failed",
+                "MERCHANT_RUN_FAILED",
+            )
+            warning = {
+                "code": "MERCHANT_RUN_FAILED",
+                "message": f"{_MERCHANT_NAMES[worker.domain]} could not be completed.",
+                "merchantAttemptId": worker.attempt.id,
+                "evidenceIds": list(worker.attempt.evidence_ids),
+            }
+            record.warnings.append(warning)
+            await self.control.emit(
+                record.run_id,
+                "run.warning",
+                warning,
+                status=record.status,
+            )
+
+    async def _navigate_merchant(self, record: RunRecord, worker: MerchantWorker) -> None:
+        assert record.category is not None
+        try:
+            await asyncio.to_thread(
+                worker.browser.navigate,
+                _merchant_start_url(record, worker.domain),
+                record.category,
+                {worker.domain},
+                separate_tab=record.category is Category.RETAIL,
+            )
+        except PauseRequired as exc:
+            while True:
+                await self._pause_for_safety(record, exc, browser=worker.browser)
+                if record.status in TERMINAL_STATUSES:
+                    return
+                try:
+                    await asyncio.to_thread(
+                        worker.browser.guard,
+                        record.category,
+                        {worker.domain},
+                    )
+                    return
+                except PauseRequired as next_exc:
+                    exc = next_exc
+
+    def _merge_merchant_results(self, record: RunRecord) -> dict[str, Any]:
+        assert record.category is not None
+        candidates = [
+            candidate
+            for worker in record.workers.values()
+            if worker.result is not None
+            for candidate in worker.result.get("candidates", [])
+        ]
+        failed_domains = {
+            worker.domain for worker in record.workers.values() if worker.result is None
+        }
+        candidates.extend(
+            offer
+            for offer in record.partial_offers
+            if _merchant_domain(offer.get("merchant")) in failed_domains
+        )
+        result = validate_agent_result(
+            record.category,
+            json.dumps({"candidates": candidates, "coupon_attempts": []}),
+            approved_domains=record.approved_domains,
+            query=record.request.query,
+        )
+        result["coupon_attempts"] = [
+            coupon
+            for worker in record.workers.values()
+            if worker.result is not None
+            for coupon in worker.result.get("coupon_attempts", [])
+        ]
+        result["stopped_before"] = "payment"
+        result["notes"] = [
+            note
+            for worker in record.workers.values()
+            if worker.result is not None
+            for note in worker.result.get("notes", [])
+        ]
+        result["partial"] = any(worker.error for worker in record.workers.values())
+        return result
 
     async def _request_approval(
         self,
@@ -685,52 +1023,88 @@ class RunManager:
         record.resume_status = None
         return approved
 
-    async def _pause_for_safety(self, record: RunRecord, exc: PauseRequired) -> None:
-        previous = record.status
-        record.resume_status = previous
-        record.active_event.clear()
-        warning = {
-            "code": exc.reason_code.value,
-            "message": self._redact_text(record, exc.reason),
-            "merchantAttemptId": None,
-            "evidenceIds": [],
-        }
-        record.warnings.append(warning)
-        if exc.reason_code is PauseReason.ADDRESS_CONSENT:
-            record.address_request_id = f"address:{uuid4()}"
-            record.status = RunStatus.AWAITING_ADDRESS_CONSENT
-            active_domain = record.browser.expected_domain
-            recipients = (
-                [active_domain]
-                if active_domain in record.approved_domains
-                else sorted(record.approved_domains)
-            )
-            await self.control.emit(
-                record.run_id,
-                "address.approval_required",
-                {
-                    "requestId": record.address_request_id,
-                    "merchantDomains": recipients,
-                    "fields": sorted(_ADDRESS_FIELDS),
-                },
-                status=RunStatus.AWAITING_ADDRESS_CONSENT,
-            )
-        else:
-            record.status = RunStatus.PAUSED
-            await self.control.emit(
-                record.run_id,
-                "run.warning",
-                warning,
-                status=RunStatus.PAUSED,
-            )
+    async def _pause_for_safety(
+        self,
+        record: RunRecord,
+        exc: PauseRequired,
+        *,
+        browser: SeleniumRemoteBrowser | None = None,
+    ) -> None:
+        async with record.pause_lock:
+            if record.status in TERMINAL_STATUSES:
+                return
+            if not record.active_event.is_set() and record.status in {
+                RunStatus.PAUSED,
+                RunStatus.AWAITING_ADDRESS_CONSENT,
+                RunStatus.USER_TAKEOVER,
+            }:
+                pass
+            else:
+                previous = record.status
+                record.resume_status = previous
+                record.active_event.clear()
+                warning = {
+                    "code": exc.reason_code.value,
+                    "message": self._redact_text(record, exc.reason),
+                    "merchantAttemptId": _attempt_id(
+                        record,
+                        browser.expected_domain if browser else None,
+                    ),
+                    "evidenceIds": [],
+                    "requiresUserInput": exc.reason_code in _USER_INPUT_PAUSE_REASONS,
+                }
+                record.warnings.append(warning)
+                if exc.reason_code is PauseReason.ADDRESS_CONSENT:
+                    record.address_request_id = f"address:{uuid4()}"
+                    record.status = RunStatus.AWAITING_ADDRESS_CONSENT
+                    await self.control.emit(
+                        record.run_id,
+                        "address.approval_required",
+                        {
+                            "requestId": record.address_request_id,
+                            "merchantDomains": sorted(record.approved_domains),
+                            "fields": sorted(_ADDRESS_FIELDS),
+                        },
+                        status=RunStatus.AWAITING_ADDRESS_CONSENT,
+                    )
+                else:
+                    await self._transition(record, RunStatus.PAUSED)
+                    await self.control.emit(
+                        record.run_id,
+                        "run.warning",
+                        warning,
+                        status=RunStatus.PAUSED,
+                    )
         await record.active_event.wait()
 
-    async def _record_discovery(self, record: RunRecord, kind: str, data: dict[str, Any]) -> None:
+    async def _record_discovery(
+        self,
+        record: RunRecord,
+        kind: str,
+        data: dict[str, Any],
+        *,
+        merchant_domain: str | None = None,
+    ) -> None:
+        data = dict(data)
+        if merchant_domain:
+            data["merchant_domain"] = merchant_domain
+            if kind in {"offer", "coupon"}:
+                data["merchant"] = merchant_domain
+                worker = record.workers.get(merchant_domain)
+                if worker is not None and worker.executor is not None:
+                    available_evidence = worker.executor.evidence_ids
+                    requested_evidence = {str(value) for value in data.get("evidence_ids", [])}
+                    verified_evidence = [
+                        evidence_id
+                        for evidence_id in available_evidence
+                        if evidence_id in requested_evidence
+                    ]
+                    data["evidence_ids"] = verified_evidence or available_evidence[-1:]
         if kind == "offer":
-            record.partial_offers.append(data)
+            _upsert_discovery(record.partial_offers, data, "offer_id")
             await self._emit_offer(record, data)
         elif kind == "coupon":
-            record.partial_coupons.append(data)
+            _upsert_discovery(record.partial_coupons, data, "coupon_attempt_id")
             await self._emit_coupon(record, data)
         elif kind == "warning":
             message = str(data.get("message", "Merchant warning"))
@@ -750,7 +1124,7 @@ class RunManager:
                 status=record.status,
             )
         elif kind == "merchant_attempt":
-            domain = str(data.get("merchant_domain", ""))
+            domain = merchant_domain or str(data.get("merchant_domain", ""))
             attempt = record.attempts.get(domain)
             outcome = data.get("outcome")
             if attempt is not None and isinstance(outcome, str):
@@ -786,15 +1160,11 @@ class RunManager:
 
     async def _emit_offer(self, record: RunRecord, data: dict[str, Any]) -> None:
         offer_id = str(data.get("offer_id") or _stable_id("offer", data))
-        if offer_id in record.emitted_offer_ids:
+        fingerprint = _fingerprint(data)
+        if record.emitted_offer_fingerprints.get(offer_id) == fingerprint:
             return
-        record.emitted_offer_ids.add(offer_id)
         evidence_ids = [str(value) for value in data.get("evidence_ids", [])]
-        validity = (
-            "valid"
-            if data.get("valid") is True
-            else ("incomplete" if data.get("incomplete_reason") else "excluded")
-        )
+        validity = _candidate_validity(data)
         await self.control.emit(
             record.run_id,
             "offer.recorded",
@@ -804,16 +1174,25 @@ class RunManager:
                 "merchantAttemptId": _attempt_id(record, data.get("merchant"))
                 or next(iter(record.attempts.values())).id,
                 "evidenceIds": evidence_ids,
+                "offer": _offer_event_data(record.category, data, validity),
             },
+            status=record.status,
+        )
+        record.emitted_offer_ids.add(offer_id)
+        record.emitted_offer_fingerprints[offer_id] = fingerprint
+        await self.control.emit(
+            record.run_id,
+            "report.updated",
+            _report_counts(record),
             status=record.status,
         )
 
     async def _emit_coupon(self, record: RunRecord, data: dict[str, Any]) -> None:
         coupon_id = str(data.get("coupon_attempt_id") or _stable_id("coupon", data))
-        if coupon_id in record.emitted_coupon_ids:
+        fingerprint = _fingerprint(data)
+        if record.emitted_coupon_fingerprints.get(coupon_id) == fingerprint:
             return
-        record.emitted_coupon_ids.add(coupon_id)
-        record.status = RunStatus.COUPON_TESTING
+        await self._transition(record, RunStatus.COUPON_TESTING)
         verified = data.get("verified") is True
         evidence_ids = [str(value) for value in data.get("evidence_ids", [])]
         raw_rejection = str(data.get("rejection_reason", "unknown"))
@@ -824,26 +1203,45 @@ class RunManager:
         status = raw_status if raw_status in _COUPON_STATUSES else "rejected"
         if rejection_reason == "technical_failure":
             status = "technical_failure"
+        offer_id = str(
+            data.get("offer_id") or next(iter(record.emitted_offer_ids), _stable_id("offer", data))
+        )
         await self.control.emit(
             record.run_id,
             "coupon.attempted",
             {
                 "couponAttemptId": coupon_id,
-                "offerId": str(data.get("offer_id") or _stable_id("offer", data)),
+                "offerId": offer_id,
                 "status": "verified" if verified else status,
                 "rejectionReason": None if verified else rejection_reason,
                 "evidenceIds": evidence_ids,
+                "coupon": _coupon_event_data(data),
             },
             status=RunStatus.COUPON_TESTING,
+        )
+        record.emitted_coupon_ids.add(coupon_id)
+        record.emitted_coupon_fingerprints[coupon_id] = fingerprint
+
+    async def _transition(self, record: RunRecord, status: RunStatus) -> None:
+        if record.status is status:
+            return
+        previous = record.status
+        record.status = status
+        await self.control.emit(
+            record.run_id,
+            "run.status_changed",
+            {"from": previous.value, "to": status.value, "reasonCode": None},
+            status=status,
         )
 
     async def _complete_attempts(self, record: RunRecord, failure_code: str | None = None) -> None:
         for attempt in record.attempts.values():
             if not attempt.completed:
-                if record.executor:
+                worker = record.workers.get(attempt.domain)
+                if worker and worker.executor:
                     attempt.evidence_ids.extend(
                         evidence_id
-                        for evidence_id in record.executor.evidence_by_attempt.get(attempt.id, [])
+                        for evidence_id in worker.executor.evidence_by_attempt.get(attempt.id, [])
                         if evidence_id not in attempt.evidence_ids
                     )
                 await self._finish_attempt(
@@ -862,6 +1260,13 @@ class RunManager:
     ) -> None:
         if attempt.completed:
             return
+        worker = record.workers.get(attempt.domain)
+        if worker and worker.executor:
+            attempt.evidence_ids.extend(
+                evidence_id
+                for evidence_id in worker.executor.evidence_by_attempt.get(attempt.id, [])
+                if evidence_id not in attempt.evidence_ids
+            )
         attempt.completed = True
         await self.control.emit(
             record.run_id,
@@ -924,7 +1329,17 @@ class RunManager:
         record.address_domains.clear()
         record.address_expires_at = None
         record.active_event.set()
-        await asyncio.to_thread(record.browser.close)
+        browsers = list(
+            {id(worker.browser): worker.browser for worker in record.workers.values()}.values()
+        )
+        if record.browser is not None and all(
+            record.browser is not browser for browser in browsers
+        ):
+            browsers.append(record.browser)
+        await asyncio.gather(
+            *(asyncio.to_thread(browser.close) for browser in browsers),
+            return_exceptions=True,
+        )
         if record.ttl_task and record.ttl_task is not asyncio.current_task():
             record.ttl_task.cancel()
         async with self._admission_lock:
@@ -947,7 +1362,22 @@ class RunManager:
 
     @staticmethod
     def _redact_text(record: RunRecord, value: str) -> str:
-        return record.executor.redactor.mask(value) if record.executor else value
+        masked = value
+        for worker in record.workers.values():
+            if worker.executor:
+                masked = worker.executor.redactor.mask(masked)
+        return record.executor.redactor.mask(masked) if record.executor else masked
+
+    @staticmethod
+    def _redact_exception(
+        record: RunRecord,
+        exc: BaseException,
+        executor: BrowserActionExecutor | None,
+    ) -> str:
+        value = str(exc) or type(exc).__name__
+        if executor:
+            value = executor.redactor.mask(value)
+        return RunManager._redact_text(record, value)
 
 
 def _fingerprint(value: Any) -> str:
@@ -967,23 +1397,271 @@ def _stable_id(prefix: str, value: dict[str, Any]) -> str:
 
 
 def _attempt_id(record: RunRecord, merchant: Any) -> str | None:
-    folded = str(merchant or "").casefold()
-    for domain, attempt in record.attempts.items():
-        if domain in folded or _MERCHANT_NAMES[domain].casefold() in folded:
-            return attempt.id
+    domain = _merchant_domain(merchant)
+    if domain and domain in record.attempts:
+        return record.attempts[domain].id
     return None
+
+
+def _merchant_domain(merchant: Any) -> str | None:
+    folded = str(merchant or "").casefold()
+    for domain, name in _MERCHANT_NAMES.items():
+        if domain in folded or name.casefold() in folded:
+            return domain
+    return None
+
+
+def _offer_event_data(
+    category: Category | None,
+    data: dict[str, Any],
+    validity: str,
+) -> dict[str, Any]:
+    """Map sanitized or incremental model discoveries to the public offer contract."""
+    resolved_category = category or Category.RETAIL
+    details = data.get("details") if isinstance(data.get("details"), dict) else {}
+    merchant_domain = (
+        _merchant_domain(data.get("merchant"))
+        or _merchant_domain(data.get("merchant_domain"))
+        or next(iter(_START_URLS[resolved_category]))
+    )
+    source_url = _http_url(data.get("url")) or _START_URLS[resolved_category].get(
+        merchant_domain,
+        f"https://{merchant_domain}/",
+    )
+    exact = data.get("exact_match") is True
+    match_confidence = _bounded_confidence(data.get("match_confidence"), 1 if exact else 0)
+    incomplete_reason = _nullable_text(data.get("incomplete_reason"))
+    price = {
+        "itemSubtotal": _money_text(data.get("subtotal")) or "0.00",
+        "deliveryFee": _money_text(data.get("delivery_fee")),
+        "serviceFee": _money_text(data.get("service_fee")),
+        "bookingFee": _money_text(data.get("booking_fee")),
+        "tax": _money_text(data.get("tax")),
+        "mandatoryFees": _mandatory_fee_event_data(data.get("mandatory_fees")),
+        "verifiedDiscount": _money_text(data.get("discount")) or "0.00",
+        "optionalTip": "0.00" if resolved_category is Category.FOOD else None,
+        "finalTotal": _money_text(data.get("total")),
+    }
+    if resolved_category is Category.RETAIL:
+        offer_details: dict[str, Any] = {
+            "kind": "retail",
+            "brand": _text(details.get("brand"), "Unknown brand"),
+            "model": _text(details.get("model"), _text(data.get("title"), "Unknown model")),
+            "variant": _nullable_text(details.get("variant")),
+            "storage": _nullable_text(details.get("storage")),
+            "size": _nullable_text(details.get("size")),
+            "color": _nullable_text(details.get("color")),
+            "quantity": _positive_int(details.get("quantity"), 1),
+            "condition": "new",
+            "deliveryEstimate": _nullable_text(details.get("delivery_estimate")),
+        }
+    elif resolved_category is Category.FOOD:
+        basis = str(details.get("proximity_basis") or "unknown")
+        if basis not in {"route_distance", "same_area", "branch_area_only", "unknown"}:
+            basis = "unknown"
+        scope = str(details.get("price_scope") or "menu_price")
+        if scope not in {"menu_price", "delivered_total"}:
+            scope = "menu_price"
+        offer_details = {
+            "kind": "food",
+            "restaurant": _text(
+                details.get("restaurant"),
+                _text(data.get("merchant"), "Unknown restaurant"),
+            ),
+            "meal": _text(details.get("meal"), _text(data.get("title"), "Unknown meal")),
+            "size": _nullable_text(details.get("meal_size")),
+            "modifiers": _string_list(details.get("required_modifiers")),
+            "rating": _number(details.get("rating")),
+            "minimumOrder": _money_text(details.get("minimum_order")),
+            "deliveryEstimate": _nullable_text(details.get("delivery_estimate")),
+            "optionalTipExcluded": True,
+            "sourceName": _text(details.get("source_name"), merchant_domain),
+            "branchArea": _nullable_text(details.get("branch_area")),
+            "distanceKm": _number(details.get("distance_km")),
+            "distanceText": _nullable_text(details.get("distance_text")),
+            "proximityBasis": basis,
+            "priceScope": scope,
+        }
+    else:
+        offer_details = {
+            "kind": "cinema",
+            "movie": _text(details.get("movie"), _text(data.get("title"), "Unknown movie")),
+            "venue": _text(details.get("venue_area"), "Unknown venue"),
+            "date": _text(details.get("date"), "Unknown date"),
+            "showtime": _text(details.get("time"), "Unknown showtime"),
+            "language": _text(details.get("language"), "Unknown language"),
+            "screenFormat": _text(details.get("screen_format"), "Unknown format"),
+            "seatCount": _positive_int(details.get("seat_count"), 1),
+            "adjacentSeats": details.get("adjacent") is True,
+            "seatType": _text(details.get("seat_type"), "Unknown seat type"),
+            "holdExpiresAt": _nullable_text(details.get("hold_expires_at")),
+        }
+    missing = _string_list(data.get("incomplete_fields"))
+    if validity == "incomplete" and not missing:
+        missing = [incomplete_reason or "unverifiedDetails"]
+    return {
+        "title": _text(data.get("title"), "Discovered offer"),
+        "sourceUrl": source_url,
+        "match": {
+            "exact": exact,
+            "confidence": match_confidence,
+            "explanation": _text(
+                data.get("match_explanation") or data.get("exclusion_reason"),
+                (
+                    "The observed product matches the requested model and variant."
+                    if exact
+                    else "The observed page did not verify every requested product attribute."
+                ),
+            ),
+        },
+        "availability": _availability(data, details),
+        "details": offer_details,
+        "price": price,
+        "exclusionReason": (
+            _nullable_text(data.get("exclusion_reason"))
+            or (
+                "The offer is outside the requested comparison." if validity == "excluded" else None
+            )
+        ),
+        "incompleteFields": missing,
+    }
+
+
+def _coupon_event_data(data: dict[str, Any]) -> dict[str, Any]:
+    before = _money_text(data.get("before_total")) or "0.00"
+    return {
+        "code": _text(data.get("code"), "Not supplied"),
+        "sourceUrl": _http_url(data.get("source_url")) or "https://www.google.com/",
+        "beforeTotal": before,
+        "afterTotal": _money_text(data.get("after_total")),
+        "verifiedDiscount": _money_text(data.get("saving")) or "0.00",
+        "message": _nullable_text(data.get("message")),
+    }
+
+
+def _mandatory_fee_event_data(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        amount = _money_text(item.get("amount"))
+        if amount is None:
+            continue
+        result.append(
+            {
+                "label": _text(item.get("label"), "Mandatory fee"),
+                "amount": amount,
+                "evidenceIds": _string_list(item.get("evidence_ids")),
+            }
+        )
+    return result
+
+
+def _availability(data: dict[str, Any], details: dict[str, Any]) -> str:
+    value = str(data.get("availability") or details.get("stock") or "").casefold()
+    if value in {"available", "in stock", "in_stock", "true"}:
+        return "available"
+    if value in {"unavailable", "out of stock", "out_of_stock", "false"}:
+        return "unavailable"
+    return "unknown"
+
+
+def _text(value: Any, fallback: str) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text[:2_000] or fallback
+
+
+def _nullable_text(value: Any) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text[:2_000] or None
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := _nullable_text(item)) is not None]
+
+
+def _money_text(value: Any) -> str | None:
+    try:
+        if value is None:
+            return None
+        amount = Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if amount < 0:
+        return None
+    return f"{amount.quantize(Decimal('0.01')):.2f}"
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(str(value).replace(",", "").strip()) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _positive_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def _bounded_confidence(value: Any, fallback: float) -> float:
+    try:
+        return min(1.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _http_url(value: Any) -> str | None:
+    text = _nullable_text(value)
+    return text if text and text.startswith(("http://", "https://")) else None
 
 
 def _report_counts(record: RunRecord) -> dict[str, int]:
     candidates = (record.result or {}).get("candidates", record.partial_offers)
-    valid = sum(item.get("valid") is True for item in candidates)
-    incomplete = sum(bool(item.get("incomplete_reason")) for item in candidates)
-    excluded = max(0, len(candidates) - valid - incomplete)
+    validities = [_candidate_validity(item) for item in candidates]
+    valid = validities.count("valid")
+    incomplete = validities.count("incomplete")
+    excluded = validities.count("excluded")
     return {
         "validOfferCount": valid,
         "excludedOfferCount": excluded,
         "incompleteOfferCount": incomplete,
     }
+
+
+def _candidate_validity(data: dict[str, Any]) -> str:
+    if data.get("exclusion_reason"):
+        return "excluded"
+    if data.get("valid") is True:
+        return "valid"
+    if (
+        data.get("incomplete_reason")
+        or data.get("subtotal") is not None
+        or data.get("total") is not None
+    ):
+        return "incomplete"
+    return "excluded"
+
+
+def _upsert_discovery(
+    discoveries: list[dict[str, Any]],
+    data: dict[str, Any],
+    id_field: str,
+) -> None:
+    discovery_id = str(data.get(id_field) or "").strip()
+    if discovery_id:
+        for index, existing in enumerate(discoveries):
+            if str(existing.get(id_field) or "").strip() == discovery_id:
+                discoveries[index] = data
+                return
+    discoveries.append(data)
 
 
 def _attach_evidence(raw: str, evidence_ids: list[str]) -> str:
@@ -994,16 +1672,27 @@ def _attach_evidence(raw: str, evidence_ids: list[str]) -> str:
     if not isinstance(value, dict):
         return raw
     fallback = evidence_ids[-1:] if evidence_ids else []
+    known_evidence = set(evidence_ids)
     candidates = value.get("candidates", [])
     if isinstance(candidates, list):
         for candidate in candidates:
-            if isinstance(candidate, dict) and not candidate.get("evidence_ids"):
-                candidate["evidence_ids"] = fallback
+            if isinstance(candidate, dict):
+                verified = [
+                    str(evidence_id)
+                    for evidence_id in candidate.get("evidence_ids", [])
+                    if str(evidence_id) in known_evidence
+                ]
+                candidate["evidence_ids"] = verified or fallback
     coupons = value.get("coupon_attempts", [])
     if isinstance(coupons, list):
         for coupon in coupons:
-            if isinstance(coupon, dict) and not coupon.get("evidence_ids"):
-                coupon["evidence_ids"] = fallback
+            if isinstance(coupon, dict):
+                verified = [
+                    str(evidence_id)
+                    for evidence_id in coupon.get("evidence_ids", [])
+                    if str(evidence_id) in known_evidence
+                ]
+                coupon["evidence_ids"] = verified or fallback
     return json.dumps(value, ensure_ascii=False)
 
 

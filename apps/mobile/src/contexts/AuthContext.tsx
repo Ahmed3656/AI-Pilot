@@ -10,6 +10,7 @@ import {
 import { STORAGE_KEYS } from '@/constants/storage';
 import { storage } from '@/storage/storage';
 import { AuthSession, AuthUser } from '@/types/auth';
+import { subscribeToAuthenticationSession } from '@/api/client';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -26,6 +27,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(true);
+
+  useEffect(
+    () =>
+      subscribeToAuthenticationSession((session) => {
+        setAccessToken(session?.accessToken ?? null);
+        setUser(session?.user ?? null);
+      }),
+    [],
+  );
 
   useEffect(() => {
     Promise.all([

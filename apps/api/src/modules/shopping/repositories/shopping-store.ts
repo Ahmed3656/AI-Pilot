@@ -46,6 +46,7 @@ export interface ShoppingStore {
     limit: number,
   ): Promise<{ events: RunEvent[]; hasMore: boolean }>;
   saveEvidence(data: DeepPartial<EvidenceArtifact>): Promise<EvidenceArtifact>;
+  findEvidence(id: string): Promise<EvidenceArtifact | null>;
   saveLease(data: DeepPartial<ControlLease>): Promise<ControlLease>;
   saveRunAndLease(run: ShoppingRun, lease: ControlLease): Promise<void>;
   findLease(id: string): Promise<ControlLease | null>;

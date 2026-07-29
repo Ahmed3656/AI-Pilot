@@ -23,7 +23,7 @@ async function submitAuthentication(
 ): Promise<AuthSession> {
   try {
     const { data } = await apiClient.post<AuthSession>(
-      `/api/v1/auth/${path}`,
+      `/auth/${path}`,
       request,
     );
     return data;

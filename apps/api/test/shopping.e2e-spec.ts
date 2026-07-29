@@ -35,6 +35,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
     body: Record<string, unknown>;
   }> = [];
   let failNextCommand = false;
+  let busyWithRunId: string | null = null;
 
   beforeAll(async () => {
     fakeAi = createServer((req, res) => {
@@ -45,6 +46,27 @@ describe('DealPilot canonical API contract (e2e)', () => {
           Buffer.concat(chunks).toString('utf8'),
         ) as Record<string, unknown>;
         aiRequests.push({ path: req.url ?? '', headers: req.headers, body });
+        if (req.url === '/internal/v1/runs' && busyWithRunId) {
+          res.writeHead(429, {
+            'content-type': 'application/json',
+            'retry-after': '2',
+          });
+          res.end(
+            JSON.stringify({
+              error: {
+                code: 'RATE_LIMITED',
+                details: [
+                  {
+                    field: 'runId',
+                    code: 'ACTIVE_RUN',
+                    message: busyWithRunId,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
         if (failNextCommand && /\/commands$/.test(req.url ?? '')) {
           failNextCommand = false;
           res.writeHead(409, { 'content-type': 'application/json' });
@@ -52,6 +74,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
             JSON.stringify({ error: { code: 'INVALID_RUN_TRANSITION' } }),
           );
           return;
+        }
+        if (body.name === 'cancel' && body.runId === busyWithRunId) {
+          busyWithRunId = null;
         }
         res.writeHead(202, { 'content-type': 'application/json' });
         if (req.url === '/internal/v1/runs') {
@@ -122,7 +147,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
     });
 
     const catalog = await api().get('/api/v1/shopping/merchants').expect(200);
-    expect(catalog.body.merchants).toHaveLength(5);
+    expect(catalog.body.merchants).toHaveLength(8);
     expect(catalog.body.merchants).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -132,6 +157,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
           currency: 'EGP',
         }),
         expect.objectContaining({ domain: 'talabat.com', category: 'food' }),
+        expect.objectContaining({ domain: 'google.com', category: 'food' }),
+        expect.objectContaining({ domain: 'menuegypt.com', category: 'food' }),
+        expect.objectContaining({ domain: 'elmenus.com', category: 'food' }),
         expect.objectContaining({
           domain: 'voxcinemas.com',
           category: 'cinema',
@@ -261,6 +289,97 @@ describe('DealPilot canonical API contract (e2e)', () => {
     });
   });
 
+  it('lets the owner cancel an active session and start a replacement without leaking its ID', async () => {
+    const active = await createRun(
+      'retail',
+      'Keep this shopping session active',
+      'en-EG',
+    );
+    const activeRunId = active.run.id as string;
+    busyWithRunId = activeRunId;
+
+    const replacementRequest = {
+      category: 'retail',
+      query: 'Start a different shopping session',
+      locale: 'en-EG',
+    };
+    const conflict = await api()
+      .post('/api/v1/shopping/runs')
+      .set('Idempotency-Key', idem('active-run-conflict'))
+      .send(replacementRequest)
+      .expect(409);
+    expect(conflict.body.error).toMatchObject({
+      code: 'ACTIVE_RUN_EXISTS',
+      details: [
+        {
+          field: 'runId',
+          code: 'ACTIVE_RUN',
+          message: activeRunId,
+        },
+      ],
+    });
+
+    const otherUserBusy = await request(app.getHttpServer())
+      .post('/api/v1/shopping/runs')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .set('Idempotency-Key', idem('other-user-active-run'))
+      .send(replacementRequest)
+      .expect(429);
+    expect(otherUserBusy.body.error).toMatchObject({
+      code: 'BROWSER_BUSY',
+      details: [],
+    });
+    expect(JSON.stringify(otherUserBusy.body)).not.toContain(activeRunId);
+
+    await api()
+      .post(`/api/v1/shopping/runs/${activeRunId}/control`)
+      .set('Idempotency-Key', idem('replace-active-run'))
+      .send({ action: 'cancel', reason: 'replaced_by_new_run' })
+      .expect(200)
+      .expect(({ body }) => expect(body.run.status).toBe('cancelled'));
+    expect(busyWithRunId).toBeNull();
+
+    await api()
+      .post('/api/v1/shopping/runs')
+      .set('Idempotency-Key', idem('replacement-run'))
+      .send(replacementRequest)
+      .expect(201)
+      .expect(({ body }) =>
+        expect(body.run).toMatchObject({
+          query: replacementRequest.query,
+          status: 'discovering',
+        }),
+      );
+  });
+
+  it('closes an orphaned AI browser session and retries after the API reconnects', async () => {
+    const orphanedRunId = '01JORPHANEDRUN000000000000';
+    busyWithRunId = orphanedRunId;
+    const before = aiRequests.length;
+
+    const created = await createRun(
+      'retail',
+      'Recover after a disconnected session',
+      'en-EG',
+    );
+
+    expect(created.run).toMatchObject({
+      query: 'Recover after a disconnected session',
+      status: 'discovering',
+    });
+    expect(busyWithRunId).toBeNull();
+    expect(aiRequests.slice(before).map((entry) => entry.path)).toEqual([
+      '/internal/v1/runs',
+      `/internal/v1/runs/${orphanedRunId}/commands`,
+      '/internal/v1/runs',
+    ]);
+    expect(aiRequests.at(-2)?.body).toMatchObject({
+      runId: orphanedRunId,
+      name: 'cancel',
+      payload: { reason: 'orphaned_control_session' },
+    });
+  });
+
   it('supports auto classification, canonical clarification, and 24-hour idempotency behavior', async () => {
     const automatic = await createRun(
       'auto',
@@ -272,6 +391,31 @@ describe('DealPilot canonical API contract (e2e)', () => {
       category: 'cinema',
       status: 'discovering',
     });
+
+    const naturalRetail = await createRun(
+      'auto',
+      'Find a Samsung A55 256 GB under 25,000 EGP, delivered by Thursday',
+      'en-EG',
+    );
+    expect(naturalRetail.run).toMatchObject({
+      requestedCategory: 'auto',
+      category: 'retail',
+      status: 'discovering',
+    });
+
+    for (const query of [
+      'Find koshary near me',
+      'Compare burgers close to me',
+      'Show shawerma menu prices',
+      'Find pizza nearby',
+    ]) {
+      const food = await createRun('auto', query, 'en-EG');
+      expect(food.run).toMatchObject({
+        requestedCategory: 'auto',
+        category: 'food',
+        status: 'discovering',
+      });
+    }
 
     const key = idem('clarify-create');
     const body = {
@@ -360,6 +504,87 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .expect(200);
     expect(current.body.run.status).toBe('awaiting_domain_approval');
     expect((await store.report(rejected.run.id)).approvals).toHaveLength(0);
+  });
+
+  it('permits takeover only for the merchant named by a user-input warning', async () => {
+    const created = await createRun('retail', 'Find a monitor', 'en-EG');
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'pause-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('pause-domain'))
+      .send({ requestId: 'pause-domain', domains: ['amazon.eg'] })
+      .expect(200);
+
+    await postEvent(runId, 'comparing', 'merchant.attempt_started', {
+      attemptId: 'pause-attempt',
+      merchantId: 'amazon-eg',
+      merchantDomain: 'amazon.eg',
+      category: 'retail',
+    });
+
+    await postEvent(runId, 'paused', 'run.status_changed', {
+      from: 'comparing',
+      to: 'paused',
+      reasonCode: 'captcha_detected',
+    });
+
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('pause-without-request'))
+      .send({ requestId: 'missing', merchantAttemptId: 'pause-attempt' })
+      .expect(404);
+
+    await postEvent(
+      runId,
+      'paused',
+      'run.warning',
+      {
+        code: 'captcha_detected',
+        message: 'CAPTCHA/human verification detected',
+        merchantAttemptId: 'pause-attempt',
+        evidenceIds: [],
+        requiresUserInput: true,
+      },
+      'pause-warning',
+    );
+
+    const paused = await api()
+      .get(`/api/v1/shopping/runs/${runId}`)
+      .expect(200);
+    expect(paused.body.run).toMatchObject({
+      status: 'paused',
+      resumeStatus: 'comparing',
+      pendingAction: {
+        type: 'browser_takeover',
+        requestId: 'pause-warning',
+        merchantAttemptId: 'pause-attempt',
+        merchantName: 'Amazon Egypt',
+        merchantDomain: 'amazon.eg',
+      },
+    });
+
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('wrong-pause-attempt'))
+      .send({
+        requestId: 'pause-warning',
+        merchantAttemptId: 'another-attempt',
+      })
+      .expect(409);
+
+    const claimed = await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('pause-takeover'))
+      .send({
+        requestId: 'pause-warning',
+        merchantAttemptId: 'pause-attempt',
+      })
+      .expect(200);
+    expect(claimed.body.run).toMatchObject({
+      status: 'user_takeover',
+      resumeStatus: 'comparing',
+    });
   });
 
   it('scopes address grants by request, approved domain, cityOrArea, and earliest TTL without exposing plaintext', async () => {
@@ -458,7 +683,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
     );
   });
 
-  it('claims, tokenizes, authorizes, and releases exclusive control in the same run session', async () => {
+  it('claims the requested merchant, authorizes control, and resumes AI work', async () => {
     const created = await createRun('retail', 'Find a phone', 'en-EG');
     const runId = created.run.id as string;
     await requireDomains(runId, 'control-domain', ['amazon.eg']);
@@ -467,11 +692,30 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('Idempotency-Key', idem('control-domain'))
       .send({ requestId: 'control-domain', domains: ['amazon.eg'] })
       .expect(200);
-    await postEvent(runId, 'ready_for_handoff', 'run.status_changed', {
-      from: 'comparing',
-      to: 'ready_for_handoff',
-      reasonCode: null,
+    await postEvent(runId, 'comparing', 'merchant.attempt_started', {
+      attemptId: 'control-attempt',
+      merchantId: 'amazon-eg',
+      merchantDomain: 'amazon.eg',
+      category: 'retail',
     });
+    await postEvent(runId, 'paused', 'run.status_changed', {
+      from: 'comparing',
+      to: 'paused',
+      reasonCode: 'login_required',
+    });
+    await postEvent(
+      runId,
+      'paused',
+      'run.warning',
+      {
+        code: 'login_required',
+        message: 'Login must be completed by the user',
+        merchantAttemptId: 'control-attempt',
+        evidenceIds: [],
+        requiresUserInput: true,
+      },
+      'control-warning',
+    );
     const view = await api()
       .post(`/api/v1/shopping/runs/${runId}/viewer-tokens`)
       .set('Idempotency-Key', idem('view-token'))
@@ -482,23 +726,37 @@ describe('DealPilot canonical API contract (e2e)', () => {
       mode: 'view',
       viewerUrl: 'https://dealpilot.test/viewer/',
     });
+    expect(String(view.headers['set-cookie']?.[0] ?? '')).toContain(
+      'dealpilot_viewer=',
+    );
     expect(view.body.viewerUrl).not.toContain(view.body.token);
 
     const claimed = await api()
       .post(`/api/v1/shopping/runs/${runId}/control/claim`)
       .set('Idempotency-Key', idem('control-claim'))
-      .send({ requestedLeaseSeconds: 120 })
+      .send({
+        requestId: 'control-warning',
+        merchantAttemptId: 'control-attempt',
+        requestedLeaseSeconds: 120,
+      })
       .expect(200);
     expect(claimed.body.run.status).toBe('user_takeover');
     expect(claimed.body.lease.status).toBe('active');
     expect(aiRequests.at(-1)?.body).toMatchObject({
       name: 'pause',
-      payload: { reason: 'control_claim' },
+      payload: {
+        reason: 'control_claim',
+        merchantAttemptId: 'control-attempt',
+        merchantDomain: 'amazon.eg',
+      },
     });
     await api()
       .post(`/api/v1/shopping/runs/${runId}/control/claim`)
       .set('Idempotency-Key', idem('second-claim'))
-      .send({})
+      .send({
+        requestId: 'control-warning',
+        merchantAttemptId: 'control-attempt',
+      })
       .expect(409);
 
     const control = await api()
@@ -511,6 +769,10 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('X-Internal-Token', INTERNAL_TOKEN)
       .set('Authorization', `Bearer ${control.body.token}`)
       .expect(200);
+    expect(authorization.headers['x-dealpilot-viewer-mode']).toBe('control');
+    const viewerCookie = String(authorization.headers['set-cookie']?.[0] ?? '');
+    expect(viewerCookie).toContain('dealpilot_viewer=');
+    expect(viewerCookie).toContain('HttpOnly');
     expect(authorization.body).toMatchObject({
       authorized: true,
       runId,
@@ -518,6 +780,11 @@ describe('DealPilot canonical API contract (e2e)', () => {
       userId: 'user-1',
       leaseId: claimed.body.lease.id,
     });
+    await request(app.getHttpServer())
+      .post('/internal/v1/viewer/authorize')
+      .set('X-Internal-Token', INTERNAL_TOKEN)
+      .set('Cookie', viewerCookie.split(';', 1)[0])
+      .expect(200);
     const handshake = await websocketHandshake(
       baseUrl,
       `/api/v1/shopping/runs/${runId}/events`,
@@ -533,7 +800,7 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .send({ leaseId: claimed.body.lease.id })
       .expect(200);
     expect(released.body).toMatchObject({
-      run: { status: 'ready_for_handoff' },
+      run: { status: 'comparing', pendingAction: null },
       lease: { status: 'released' },
     });
     expect(aiRequests.at(-1)?.body).toMatchObject({
@@ -545,6 +812,73 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .set('X-Internal-Token', INTERNAL_TOKEN)
       .set('Authorization', `Bearer ${control.body.token}`)
       .expect(401);
+  });
+
+  it('keeps ready-for-handoff browser sessions view-only', async () => {
+    const created = await createRun(
+      'retail',
+      'Find a view-only phone',
+      'en-EG',
+    );
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'view-only-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('view-only-domain'))
+      .send({ requestId: 'view-only-domain', domains: ['amazon.eg'] })
+      .expect(200);
+    await postEvent(runId, 'ready_for_handoff', 'run.status_changed', {
+      from: 'comparing',
+      to: 'ready_for_handoff',
+      reasonCode: null,
+    });
+
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/control/claim`)
+      .set('Idempotency-Key', idem('view-only-claim'))
+      .send({ requestId: 'not-requested', merchantAttemptId: 'not-requested' })
+      .expect(409);
+  });
+
+  it('resumes an AI-originated safety pause from its previous run state', async () => {
+    const created = await createRun('retail', 'Find a phone safely', 'en-EG');
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'safety-pause-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('safety-pause-domain'))
+      .send({
+        requestId: 'safety-pause-domain',
+        domains: ['amazon.eg'],
+      })
+      .expect(200);
+    await postEvent(runId, 'paused', 'run.status_changed', {
+      from: 'comparing',
+      to: 'paused',
+      reasonCode: 'browser_warning',
+    });
+
+    const paused = await api()
+      .get(`/api/v1/shopping/runs/${runId}`)
+      .expect(200);
+    expect(paused.body.run).toMatchObject({
+      status: 'paused',
+      resumeStatus: 'comparing',
+    });
+
+    const resumed = await api()
+      .post(`/api/v1/shopping/runs/${runId}/control`)
+      .set('Idempotency-Key', idem('safety-pause-resume'))
+      .send({ action: 'resume' })
+      .expect(200);
+    expect(resumed.body.run).toMatchObject({
+      status: 'comparing',
+      resumeStatus: null,
+    });
+    expect(aiRequests.at(-1)?.body).toMatchObject({
+      name: 'resume',
+      payload: { reason: 'user' },
+    });
   });
 
   it('builds an evidence-linked comparison report and excludes invalid EGP arithmetic from ranking', async () => {
@@ -647,6 +981,218 @@ describe('DealPilot canonical API contract (e2e)', () => {
       .expect(404);
   });
 
+  it('materializes canonical AI evidence and incomplete offers while retaining partial merchant failures', async () => {
+    const created = await createRun(
+      'retail',
+      'Find a deterministic integration laptop',
+      'en-EG',
+    );
+    const runId = created.run.id as string;
+    await requireDomains(runId, 'materialize-domain', ['amazon.eg']);
+    await api()
+      .post(`/api/v1/shopping/runs/${runId}/domains/approve`)
+      .set('Idempotency-Key', idem('materialize-domain'))
+      .send({ requestId: 'materialize-domain', domains: ['amazon.eg'] })
+      .expect(200);
+
+    const attemptId = 'attempt:identifier-longer-than-twenty-six-characters';
+    const evidenceId = 'evidence:identifier-longer-than-twenty-six-characters';
+    const offerId = 'offer:identifier-longer-than-twenty-six-characters';
+    const screenshot = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01, 0x02, 0x03,
+    ]);
+    await postEvent(runId, 'comparing', 'merchant.attempt_started', {
+      attemptId,
+      merchantId: 'amazon-eg',
+      merchantDomain: 'amazon.eg',
+      category: 'retail',
+    });
+    const uploaded = await request(app.getHttpServer())
+      .post(
+        `/internal/v1/evidence/${encodeURIComponent(runId)}/${encodeURIComponent(evidenceId)}`,
+      )
+      .set('X-Internal-Token', INTERNAL_TOKEN)
+      .attach('file', screenshot, {
+        filename: 'screenshot.png',
+        contentType: 'image/png',
+      })
+      .expect(201);
+    expect(uploaded.body).toMatchObject({ accepted: true, evidenceId });
+    await postEvent(runId, 'comparing', 'evidence.captured', {
+      evidenceId,
+      kind: 'screenshot',
+      merchantAttemptId: attemptId,
+      redacted: true,
+    });
+    await postEvent(runId, 'comparing', 'offer.recorded', {
+      offerId,
+      validity: 'incomplete',
+      merchantAttemptId: attemptId,
+      evidenceIds: [evidenceId],
+      offer: {
+        title: 'Deterministic integration laptop',
+        sourceUrl: 'https://www.amazon.eg/dp/test-laptop',
+        match: {
+          exact: true,
+          confidence: 1,
+          explanation: 'The requested model is visible on the product page.',
+        },
+        availability: 'available',
+        details: {
+          kind: 'retail',
+          brand: 'Test',
+          model: 'Integration Laptop',
+          variant: null,
+          storage: null,
+          size: null,
+          color: null,
+          quantity: 1,
+          condition: 'new',
+          deliveryEstimate: null,
+        },
+        price: {
+          itemSubtotal: '25000.00',
+          deliveryFee: null,
+          serviceFee: null,
+          bookingFee: null,
+          tax: null,
+          mandatoryFees: [],
+          verifiedDiscount: '0.00',
+          optionalTip: null,
+          finalTotal: null,
+        },
+        exclusionReason: null,
+        incompleteFields: ['deliveryFee', 'finalTotal'],
+      },
+    });
+    await postEvent(runId, 'comparing', 'offer.recorded', {
+      offerId: 'offer:materialized-samsung-a55',
+      validity: 'valid',
+      merchantAttemptId: attemptId,
+      evidenceIds: [evidenceId],
+      offer: {
+        title: 'Samsung Galaxy A55 5G 256GB',
+        sourceUrl: 'https://www.amazon.eg/example-a55',
+        match: {
+          exact: true,
+          confidence: 0.98,
+          explanation: 'Exact model and storage match.',
+        },
+        availability: 'available',
+        details: {
+          kind: 'retail',
+          brand: 'Samsung',
+          model: 'A55',
+          variant: '8 GB RAM',
+          storage: '256 GB',
+          size: null,
+          color: 'blue',
+          quantity: 1,
+          condition: 'new',
+          deliveryEstimate: '2026-07-19',
+        },
+        price: {
+          itemSubtotal: '24495.00',
+          deliveryFee: '0.00',
+          serviceFee: '0.00',
+          bookingFee: '0.00',
+          tax: '0.00',
+          mandatoryFees: [],
+          verifiedDiscount: '0.00',
+          optionalTip: null,
+          finalTotal: '24495.00',
+        },
+        observedAt: '2026-07-18T10:00:00.000Z',
+        exclusionReason: null,
+        incompleteFields: [],
+      },
+    });
+    await postEvent(runId, 'coupon_testing', 'run.status_changed', {
+      from: 'comparing',
+      to: 'coupon_testing',
+      reasonCode: null,
+    });
+    await postEvent(runId, 'coupon_testing', 'coupon.attempted', {
+      couponAttemptId: 'coupon:materialized-test',
+      offerId: 'offer:materialized-samsung-a55',
+      status: 'rejected',
+      rejectionReason: 'not_eligible',
+      evidenceIds: [evidenceId],
+      coupon: {
+        code: 'A55DEAL',
+        sourceUrl: 'https://www.amazon.eg/coupons/a55deal',
+        beforeTotal: '24495.00',
+        afterTotal: null,
+        verifiedDiscount: '0.00',
+        message: 'The code did not apply to this product.',
+      },
+    });
+    await postEvent(runId, 'coupon_testing', 'merchant.attempt_completed', {
+      attemptId,
+      outcome: 'unavailable',
+      failureCode: 'MERCHANT_UNAVAILABLE',
+      evidenceIds: [evidenceId],
+    });
+
+    const report = await api()
+      .get(`/api/v1/shopping/runs/${runId}/report`)
+      .expect(200);
+    expect(report.body.incompleteOffers).toEqual([
+      expect.objectContaining({
+        id: offerId,
+        merchantAttemptId: attemptId,
+        evidenceIds: [evidenceId],
+        title: 'Deterministic integration laptop',
+        price: expect.objectContaining({ itemSubtotal: '25000.00' }),
+      }),
+    ]);
+    expect(report.body.validOffers).toEqual([
+      expect.objectContaining({
+        id: 'offer:materialized-samsung-a55',
+        title: 'Samsung Galaxy A55 5G 256GB',
+        price: expect.objectContaining({ finalTotal: '24495.00' }),
+        details: expect.objectContaining({
+          model: 'A55',
+          storage: '256 GB',
+          deliveryEstimate: '2026-07-19',
+        }),
+      }),
+    ]);
+    expect(report.body.couponAttempts).toEqual([
+      expect.objectContaining({
+        id: 'coupon:materialized-test',
+        code: 'A55DEAL',
+        sourceUrl: 'https://www.amazon.eg/coupons/a55deal',
+        beforeTotal: '24495.00',
+        afterTotal: null,
+        verifiedDiscount: '0.00',
+        rejectionReason: 'not_eligible',
+        message: 'The code did not apply to this product.',
+      }),
+    ]);
+    expect(report.body.partialFailures).toEqual([
+      expect.objectContaining({
+        merchantAttemptId: attemptId,
+        code: 'MERCHANT_UNAVAILABLE',
+      }),
+    ]);
+    expect(report.body.evidence).toEqual([
+      expect.objectContaining({
+        id: evidenceId,
+        redacted: true,
+        sha256: uploaded.body.sha256,
+        uri: `https://dealpilot.test/api/v1/shopping/runs/${runId}/evidence/${encodeURIComponent(evidenceId)}`,
+      }),
+    ]);
+    const downloaded = await api()
+      .get(
+        `/api/v1/shopping/runs/${runId}/evidence/${encodeURIComponent(evidenceId)}`,
+      )
+      .expect('Content-Type', /image\/png/)
+      .expect(200);
+    expect(Buffer.from(downloaded.body)).toEqual(screenshot);
+  });
+
   function api() {
     return {
       get: (path: string) =>
@@ -696,8 +1242,9 @@ describe('DealPilot canonical API contract (e2e)', () => {
     status: string,
     type: string,
     payload: Record<string, unknown>,
+    eventId?: string,
   ) {
-    const id = `ai-${type}-${Math.random().toString(36).slice(2)}`;
+    const id = eventId ?? `ai-${type}-${Math.random().toString(36).slice(2)}`;
     return request(app.getHttpServer())
       .post('/internal/v1/ai-events')
       .set('X-Internal-Token', INTERNAL_TOKEN)

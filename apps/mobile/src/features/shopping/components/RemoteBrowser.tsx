@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { StyleSheet, Text, View } from 'react-native';
 import { AppButton, Card } from '@/components';
 import { useToast } from '@/components/Toast';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -13,11 +12,13 @@ import {
 } from '../shopping.service';
 import {
   ControlLease,
+  PendingAction,
   RunResource,
   RunStatus,
   ViewerTokenResponse,
 } from '../types';
 import { SectionHeading } from './ShoppingControls';
+import { BrowserViewer } from './BrowserViewer';
 
 function noVncUrl(uri: string, viewOnly: boolean): string {
   const url = new URL(uri);
@@ -28,15 +29,21 @@ function noVncUrl(uri: string, viewOnly: boolean): string {
 }
 
 const TERMINAL_STATUSES: RunStatus[] = ['completed', 'cancelled', 'failed'];
+type BrowserTakeoverAction = Extract<
+  PendingAction,
+  { type: 'browser_takeover' }
+>;
 
 export function RemoteBrowser({
   runId,
   status,
+  takeoverAction,
   expiredLeaseId,
   onRunChanged,
 }: {
   runId: string;
   status: RunStatus;
+  takeoverAction?: BrowserTakeoverAction;
   expiredLeaseId?: string;
   onRunChanged: (run: RunResource) => void;
 }) {
@@ -116,7 +123,12 @@ export function RemoteBrowser({
     setBusy(true);
     let claimedLease: ControlLease | null = null;
     try {
-      const claim = await claimControl(runId);
+      if (!takeoverAction) return;
+      const claim = await claimControl(
+        runId,
+        takeoverAction.requestId,
+        takeoverAction.merchantAttemptId,
+      );
       claimedLease = claim.lease;
       onRunChanged(claim.run);
       const controlViewer = await createViewerToken(
@@ -189,29 +201,50 @@ export function RemoteBrowser({
           {t(hasControl ? 'controlActive' : 'viewOnly')}
         </Text>
       </View>
-      {activeUrl && viewer && Platform.OS !== 'web' ? (
+      {takeoverAction ? (
         <View
-          pointerEvents={hasControl ? 'auto' : 'none'}
-          style={[styles.viewerFrame, { borderColor: theme.colors.border }]}
+          style={[
+            styles.takeoverRequest,
+            { backgroundColor: theme.colors.warningSurface },
+          ]}
         >
-          <WebView
-            allowsInlineMediaPlayback
-            javaScriptEnabled
-            onShouldStartLoadWithRequest={(request) => {
-              try {
-                return new URL(request.url).origin === viewerOrigin;
-              } catch {
-                return false;
-              }
-            }}
-            originWhitelist={viewerOrigin ? [`${viewerOrigin}/*`] : []}
-            source={{
-              uri: activeUrl,
-              headers: { Authorization: `${viewer.tokenType} ${viewer.token}` },
-            }}
-            style={styles.viewer}
-          />
+          <Text
+            style={[
+              styles.warningTitle,
+              textDirection,
+              { color: theme.colors.warning },
+            ]}
+          >
+            {t('manualInputRequired')}
+          </Text>
+          <Text
+            style={[
+              styles.warningBody,
+              textDirection,
+              { color: theme.colors.text },
+            ]}
+          >
+            {takeoverAction.merchantName} · {takeoverAction.message}
+          </Text>
+          <Text
+            style={[
+              styles.takeoverDomain,
+              textDirection,
+              { color: theme.colors.muted },
+            ]}
+          >
+            {takeoverAction.merchantDomain}
+          </Text>
         </View>
+      ) : null}
+      {activeUrl && viewer && viewerOrigin ? (
+        <BrowserViewer
+          borderColor={theme.colors.border}
+          interactive={hasControl}
+          token={`${viewer.tokenType} ${viewer.token}`}
+          uri={activeUrl}
+          viewerOrigin={viewerOrigin}
+        />
       ) : (
         <View
           style={[
@@ -230,18 +263,18 @@ export function RemoteBrowser({
           </Text>
         </View>
       )}
-      <AppButton
-        disabled={
-          busy ||
-          (hasControl ? false : status !== 'ready_for_handoff') ||
-          !viewer
-        }
-        label={
-          busy ? t('takingOver') : t(hasControl ? 'releaseControl' : 'takeOver')
-        }
-        onPress={() => void (hasControl ? release() : takeOver())}
-        variant={hasControl ? 'secondary' : 'primary'}
-      />
+      {hasControl || takeoverAction ? (
+        <AppButton
+          disabled={busy || (!hasControl && status !== 'paused') || !viewer}
+          label={
+            busy
+              ? t('takingOver')
+              : t(hasControl ? 'releaseControl' : 'takeOver')
+          }
+          onPress={() => void (hasControl ? release() : takeOver())}
+          variant={hasControl ? 'secondary' : 'primary'}
+        />
+      ) : null}
       <View
         style={[
           styles.paymentWarning,
@@ -274,13 +307,6 @@ export function RemoteBrowser({
 const styles = StyleSheet.create({
   mode: { borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9 },
   modeText: { fontSize: 13, fontWeight: '900' },
-  viewerFrame: {
-    height: 380,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderRadius: 12,
-  },
-  viewer: { flex: 1, backgroundColor: '#101828' },
   placeholder: {
     minHeight: 160,
     borderRadius: 12,
@@ -289,6 +315,8 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   placeholderText: { fontSize: 14, lineHeight: 20 },
+  takeoverRequest: { borderRadius: 12, padding: 14, gap: 5 },
+  takeoverDomain: { fontSize: 12, lineHeight: 18, fontWeight: '700' },
   paymentWarning: { borderRadius: 12, padding: 14, gap: 5 },
   warningTitle: { fontSize: 16, fontWeight: '900' },
   warningBody: { fontSize: 14, lineHeight: 21, fontWeight: '600' },

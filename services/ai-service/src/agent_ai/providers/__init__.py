@@ -1,8 +1,6 @@
-"""AI provider contracts. Concrete providers will be added in feature packets."""
+"""AI provider contracts and the live OpenRouter adapter."""
 
 from agent_ai.providers.base import AIProvider
+from agent_ai.providers.openrouter_responses import OpenRouterComputerAgent
 
-__all__ = ["AIProvider"]
-from agent_ai.providers.openai_responses import OpenAIComputerAgent
-
-__all__ = ["OpenAIComputerAgent"]
+__all__ = ["AIProvider", "OpenRouterComputerAgent"]

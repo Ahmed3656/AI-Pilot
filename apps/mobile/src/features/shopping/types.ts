@@ -91,6 +91,15 @@ export type PendingAction =
       merchantDomain: string;
       holdDurationSeconds: number | null;
     }
+  | {
+      type: 'browser_takeover';
+      requestId: string;
+      merchantAttemptId: string;
+      merchantName: string;
+      merchantDomain: string;
+      reasonCode: string;
+      message: string;
+    }
   | { type: 'handoff'; requestId: string };
 
 export interface RunResource {
@@ -257,6 +266,17 @@ export interface EventPayloadMap {
     validity: 'valid' | 'excluded' | 'incomplete';
     merchantAttemptId: string;
     evidenceIds: string[];
+    offer?: Pick<
+      OfferReport,
+      | 'title'
+      | 'sourceUrl'
+      | 'match'
+      | 'availability'
+      | 'details'
+      | 'price'
+      | 'exclusionReason'
+      | 'incompleteFields'
+    > & { observedAt?: string };
   };
   'coupon.attempted': {
     couponAttemptId: string;
@@ -264,6 +284,15 @@ export interface EventPayloadMap {
     status: CouponStatus;
     rejectionReason: CouponRejectionReason | null;
     evidenceIds: string[];
+    coupon: Pick<
+      CouponAttemptReport,
+      | 'code'
+      | 'sourceUrl'
+      | 'beforeTotal'
+      | 'afterTotal'
+      | 'verifiedDiscount'
+      | 'message'
+    >;
   };
   'evidence.captured': {
     evidenceId: string;
@@ -276,11 +305,13 @@ export interface EventPayloadMap {
     message: string;
     merchantAttemptId: string | null;
     evidenceIds: string[];
+    requiresUserInput?: boolean;
   };
   'control.claimed': {
     leaseId: string;
     holderUserId: string;
     expiresAt: string;
+    merchantAttemptId: string;
   };
   'control.renewed': { leaseId: string; expiresAt: string };
   'control.released': {
@@ -386,6 +417,13 @@ export interface FoodOfferDetails {
   minimumOrder: string | null;
   deliveryEstimate: string | null;
   optionalTipExcluded: true;
+  sourceName?: string;
+  branchArea?: string | null;
+  distanceKm?: number | null;
+  distanceText?: string | null;
+  proximityBasis?:
+    'route_distance' | 'same_area' | 'branch_area_only' | 'unknown';
+  priceScope?: 'menu_price' | 'delivered_total';
 }
 
 export interface CinemaOfferDetails {

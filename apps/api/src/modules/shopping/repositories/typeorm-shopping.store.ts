@@ -113,6 +113,13 @@ export class TypeormShoppingStore implements ShoppingStore {
   saveEvidence(data: DeepPartial<EvidenceArtifact>): Promise<EvidenceArtifact> {
     return this.evidence.save(this.evidence.create(data));
   }
+  findEvidence(id: string): Promise<EvidenceArtifact | null> {
+    return this.evidence
+      .createQueryBuilder('evidence')
+      .addSelect('evidence.content')
+      .where('evidence.id = :id', { id })
+      .getOne();
+  }
   saveLease(data: DeepPartial<ControlLease>): Promise<ControlLease> {
     return this.leases.save(this.leases.create(data));
   }

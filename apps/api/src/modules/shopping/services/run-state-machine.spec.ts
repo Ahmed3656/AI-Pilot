@@ -22,6 +22,36 @@ describe('RunStateMachine', () => {
     ).toThrow('Invalid run transition');
   });
 
+  it('allows a safety-paused run to enter manual takeover', () => {
+    expect(() =>
+      machine.assertTransition(S.Paused, S.UserTakeover, S.Comparing),
+    ).not.toThrow();
+  });
+
+  it('keeps ready-for-handoff runs view-only', () => {
+    expect(() =>
+      machine.assertTransition(S.ReadyForHandoff, S.UserTakeover),
+    ).toThrow('Invalid run transition');
+  });
+
+  it('returns manual takeover to the stored pre-pause status', () => {
+    expect(() =>
+      machine.assertTransition(S.UserTakeover, S.Comparing, S.Comparing),
+    ).not.toThrow();
+    expect(() =>
+      machine.assertTransition(S.UserTakeover, S.Discovering, S.Comparing),
+    ).toThrow('Invalid run transition');
+  });
+
+  it.each([S.Cancelled, S.Failed])(
+    'allows paused runs to enter terminal state %s',
+    (terminal) => {
+      expect(() =>
+        machine.assertTransition(S.Paused, terminal, S.Comparing),
+      ).not.toThrow();
+    },
+  );
+
   it.each([S.Completed, S.Cancelled, S.Failed])(
     'keeps terminal state %s immutable',
     (terminal) => {

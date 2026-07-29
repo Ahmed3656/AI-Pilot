@@ -135,6 +135,10 @@ export class InMemoryShoppingStore implements ShoppingStore {
     return this.saveEntity(this.evidence, EvidenceArtifact, data);
   }
 
+  findEvidence(id: string): Promise<EvidenceArtifact | null> {
+    return Promise.resolve(this.evidence.get(id) ?? null);
+  }
+
   saveLease(data: DeepPartial<ControlLease>): Promise<ControlLease> {
     return this.saveEntity(this.leases, ControlLease, data);
   }

@@ -55,6 +55,21 @@ class EnvironmentVariables {
 }
 
 export function validateEnvironment(config: Record<string, unknown>) {
+  const deprecatedVariables = [
+    'INTERNAL_SERVICE_TOKEN',
+    'AI_INTERNAL_SERVICE_TOKEN',
+    'AI_NEST_API_INTERNAL_URL',
+    'VIEWER_AUTH_SHARED_SECRET',
+    'COUNTRY',
+    'MARKET',
+    'CURRENCY',
+    'TIMEZONE',
+  ].filter((key) => config[key] !== undefined);
+  if (deprecatedVariables.length) {
+    throw new Error(
+      `Unsupported environment variables: ${deprecatedVariables.join(', ')}`,
+    );
+  }
   const numeric = (key: string, fallback: number) =>
     Number(config[key] ?? fallback);
   const nodeEnv = config.NODE_ENV ?? NodeEnvironment.Development;
