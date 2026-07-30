@@ -1,6 +1,6 @@
 import { isAxiosError } from 'axios';
 import { apiClient } from '@/api/client';
-import { AuthSession } from '@/types/auth';
+import { AuthSession, RegistrationResult } from '@/types/auth';
 
 export interface LoginRequest {
   email: string;
@@ -18,8 +18,8 @@ export class AuthenticationError extends Error {
 }
 
 async function submitAuthentication(
-  path: 'login' | 'register',
-  request: LoginRequest | RegisterRequest,
+  path: 'login',
+  request: LoginRequest,
 ): Promise<AuthSession> {
   try {
     const { data } = await apiClient.post<AuthSession>(
@@ -42,6 +42,21 @@ export function login(request: LoginRequest): Promise<AuthSession> {
   return submitAuthentication('login', request);
 }
 
-export function register(request: RegisterRequest): Promise<AuthSession> {
-  return submitAuthentication('register', request);
+export async function register(
+  request: RegisterRequest,
+): Promise<RegistrationResult> {
+  try {
+    const { data } = await apiClient.post<RegistrationResult>(
+      '/auth/register',
+      request,
+    );
+    return data;
+  } catch (error) {
+    if (
+      isAxiosError(error) &&
+      [400, 401, 403, 409].includes(error.response?.status ?? 0)
+    )
+      throw new AuthenticationError('invalid');
+    throw new AuthenticationError('unavailable');
+  }
 }

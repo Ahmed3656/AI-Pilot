@@ -30,8 +30,20 @@ export function configuration() {
       jwtSecret:
         process.env.JWT_SECRET ??
         (isTest ? 'test-jwt-secret-at-least-32-characters-long' : undefined),
-      accessTtl: process.env.JWT_ACCESS_TTL ?? '15m',
-      refreshTtl: process.env.JWT_REFRESH_TTL ?? '7d',
+      accessTtlSeconds: durationSeconds(process.env.JWT_ACCESS_TTL ?? '15m'),
+      refreshTtlSeconds: durationSeconds(process.env.JWT_REFRESH_TTL ?? '7d'),
+      verificationTtlSeconds: Number(
+        process.env.AUTH_VERIFICATION_TTL_SECONDS ?? 86_400,
+      ),
+      recoveryTtlSeconds: Number(process.env.AUTH_RECOVERY_TTL_SECONDS ?? 3600),
+      loginMaximumAttempts: Number(
+        process.env.AUTH_LOGIN_MAXIMUM_ATTEMPTS ?? 5,
+      ),
+      loginNetworkMaximumAttempts: Number(
+        process.env.AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS ?? 50,
+      ),
+      loginWindowSeconds: Number(process.env.AUTH_LOGIN_WINDOW_SECONDS ?? 900),
+      loginLockSeconds: Number(process.env.AUTH_LOGIN_LOCK_SECONDS ?? 900),
     },
     shopping: {
       aiBaseUrl: process.env.AI_SERVICE_URL ?? '',
@@ -51,4 +63,13 @@ export function configuration() {
       aiTimeoutMs: Number(process.env.AI_REQUEST_TIMEOUT_SECONDS ?? 10) * 1000,
     },
   };
+}
+
+function durationSeconds(value: string): number {
+  const match = /^(\d+)([smhd])$/.exec(value);
+  if (!match) return Number.NaN;
+  const multiplier = { s: 1, m: 60, h: 3600, d: 86_400 }[
+    match[2] as 's' | 'm' | 'h' | 'd'
+  ];
+  return Number(match[1]) * multiplier;
 }

@@ -68,12 +68,18 @@ function refreshAuthentication(): Promise<AuthSession> {
 }
 
 async function performRefresh(): Promise<AuthSession> {
-  const refreshToken = await storage.get(STORAGE_KEYS.refreshToken);
-  if (!refreshToken) throw new AuthenticationSessionExpiredError();
+  const [sessionId, refreshToken] = await Promise.all([
+    storage.get(STORAGE_KEYS.authSessionId),
+    storage.get(STORAGE_KEYS.refreshToken),
+  ]);
+  if (!sessionId || !refreshToken)
+    throw new AuthenticationSessionExpiredError();
   const { data } = await apiClient.post<AuthSession>('/auth/refresh', {
+    sessionId,
     refreshToken,
   });
   await Promise.all([
+    storage.set(STORAGE_KEYS.authSessionId, data.session.id),
     storage.set(STORAGE_KEYS.accessToken, data.accessToken),
     storage.set(STORAGE_KEYS.refreshToken, data.refreshToken),
     storage.set(STORAGE_KEYS.authUser, JSON.stringify(data.user)),
@@ -84,6 +90,7 @@ async function performRefresh(): Promise<AuthSession> {
 
 async function clearStoredSession(): Promise<void> {
   await Promise.all([
+    storage.remove(STORAGE_KEYS.authSessionId),
     storage.remove(STORAGE_KEYS.accessToken),
     storage.remove(STORAGE_KEYS.refreshToken),
     storage.remove(STORAGE_KEYS.authUser),

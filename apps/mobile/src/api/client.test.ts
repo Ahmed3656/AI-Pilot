@@ -27,6 +27,15 @@ const remove = storage.remove as jest.MockedFunction<typeof storage.remove>;
 const stored = new Map<string, string>();
 
 const refreshedSession = {
+  session: {
+    id: 'session-1',
+    principalId: 'user-1',
+    status: 'active' as const,
+    rotationFamilyId: 'family-1',
+    issuedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2026-01-08T00:00:00.000Z',
+    revokedAt: null,
+  },
   accessToken: 'access-new',
   refreshToken: 'refresh-new',
   user: { id: 'user-1', email: 'demo@example.test' },
@@ -38,6 +47,7 @@ describe('API authentication refresh coordination', () => {
     stored.clear();
     stored.set(STORAGE_KEYS.accessToken, 'access-old');
     stored.set(STORAGE_KEYS.refreshToken, 'refresh-old');
+    stored.set(STORAGE_KEYS.authSessionId, 'session-1');
     get.mockImplementation((key) => Promise.resolve(stored.get(key) ?? null));
     set.mockImplementation((key, value) => {
       stored.set(key, value);
@@ -82,6 +92,10 @@ describe('API authentication refresh coordination', () => {
       STORAGE_KEYS.accessToken,
       refreshedSession.accessToken,
     );
+    expect(set).toHaveBeenCalledWith(
+      STORAGE_KEYS.authSessionId,
+      refreshedSession.session.id,
+    );
     expect(observedSessions).toEqual([refreshedSession]);
     unsubscribe();
   });
@@ -95,7 +109,7 @@ describe('API authentication refresh coordination', () => {
     await expect(apiClient.get('/shopping/runs/run-1')).rejects.toBeInstanceOf(
       AuthenticationSessionExpiredError,
     );
-    expect(remove).toHaveBeenCalledTimes(3);
+    expect(remove).toHaveBeenCalledTimes(4);
   });
 });
 

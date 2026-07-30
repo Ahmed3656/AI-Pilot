@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  Matches,
   Max,
   Min,
   MinLength,
@@ -32,6 +33,14 @@ class EnvironmentVariables {
   @IsBoolean() DATABASE_ENABLED = false;
   @IsOptional() @IsString() DATABASE_URL?: string;
   @IsOptional() @IsString() @MinLength(32) JWT_SECRET?: string;
+  @IsString() @Matches(/^\d+[smhd]$/) JWT_ACCESS_TTL = '15m';
+  @IsString() @Matches(/^\d+[smhd]$/) JWT_REFRESH_TTL = '7d';
+  @IsInt() @Min(300) @Max(604_800) AUTH_VERIFICATION_TTL_SECONDS = 86_400;
+  @IsInt() @Min(300) @Max(86_400) AUTH_RECOVERY_TTL_SECONDS = 3600;
+  @IsInt() @Min(2) @Max(20) AUTH_LOGIN_MAXIMUM_ATTEMPTS = 5;
+  @IsInt() @Min(10) @Max(500) AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS = 50;
+  @IsInt() @Min(60) @Max(3600) AUTH_LOGIN_WINDOW_SECONDS = 900;
+  @IsInt() @Min(60) @Max(86_400) AUTH_LOGIN_LOCK_SECONDS = 900;
   @IsOptional() @IsString() @MinLength(32) INTERNAL_TOKEN?: string;
   @IsOptional() @IsString() @MinLength(32) VIEWER_TOKEN_SECRET?: string;
   @IsOptional() @IsUrl({ require_tld: false }) AI_SERVICE_URL?: string;
@@ -96,6 +105,20 @@ export function validateEnvironment(config: Record<string, unknown>) {
       0.75,
     ),
     ADDRESS_SECRET_TTL_MS: numeric('ADDRESS_SECRET_TTL_MS', 1_800_000),
+    JWT_ACCESS_TTL: config.JWT_ACCESS_TTL ?? '15m',
+    JWT_REFRESH_TTL: config.JWT_REFRESH_TTL ?? '7d',
+    AUTH_VERIFICATION_TTL_SECONDS: numeric(
+      'AUTH_VERIFICATION_TTL_SECONDS',
+      86_400,
+    ),
+    AUTH_RECOVERY_TTL_SECONDS: numeric('AUTH_RECOVERY_TTL_SECONDS', 3600),
+    AUTH_LOGIN_MAXIMUM_ATTEMPTS: numeric('AUTH_LOGIN_MAXIMUM_ATTEMPTS', 5),
+    AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS: numeric(
+      'AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS',
+      50,
+    ),
+    AUTH_LOGIN_WINDOW_SECONDS: numeric('AUTH_LOGIN_WINDOW_SECONDS', 900),
+    AUTH_LOGIN_LOCK_SECONDS: numeric('AUTH_LOGIN_LOCK_SECONDS', 900),
     VIEWER_TOKEN_TTL_SECONDS: numeric('VIEWER_TOKEN_TTL_SECONDS', 900),
     CONTROL_LEASE_TTL_SECONDS: numeric('CONTROL_LEASE_TTL_SECONDS', 120),
     RUN_BROWSER_TTL_SECONDS: numeric('RUN_BROWSER_TTL_SECONDS', 3600),
@@ -111,6 +134,14 @@ export function validateEnvironment(config: Record<string, unknown>) {
     throw new Error(errors.map((error) => error.toString()).join('\n'));
   if (validated.AI_SERVICE_URL?.endsWith('/'))
     throw new Error('AI_SERVICE_URL must not have a trailing slash');
+  const accessTtl = durationSeconds(validated.JWT_ACCESS_TTL);
+  const refreshTtl = durationSeconds(validated.JWT_REFRESH_TTL);
+  if (accessTtl < 60 || accessTtl > 900)
+    throw new Error('JWT_ACCESS_TTL must be between 60s and 15m');
+  if (refreshTtl < 300 || refreshTtl > 2_592_000)
+    throw new Error('JWT_REFRESH_TTL must be between 5m and 30d');
+  if (refreshTtl <= accessTtl)
+    throw new Error('JWT_REFRESH_TTL must exceed JWT_ACCESS_TTL');
   if (validated.NODE_ENV !== NodeEnvironment.Test && !normalized.JWT_SECRET)
     throw new Error('JWT_SECRET must be provided outside tests');
   if (validated.NODE_ENV === NodeEnvironment.Production) {
@@ -138,4 +169,13 @@ export function validateEnvironment(config: Record<string, unknown>) {
       'JWT_SECRET, INTERNAL_TOKEN, and VIEWER_TOKEN_SECRET must be distinct',
     );
   return normalized;
+}
+
+function durationSeconds(value: string): number {
+  const match = /^(\d+)([smhd])$/.exec(value);
+  if (!match) return Number.NaN;
+  const multiplier = { s: 1, m: 60, h: 3600, d: 86_400 }[
+    match[2] as 's' | 'm' | 'h' | 'd'
+  ];
+  return Number(match[1]) * multiplier;
 }

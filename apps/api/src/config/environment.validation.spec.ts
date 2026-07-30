@@ -38,6 +38,46 @@ describe('environment validation', () => {
     ).toThrow('DATABASE_ENABLED');
   });
 
+  it('accepts bounded authentication expiry and throttle policy', () => {
+    expect(
+      validateEnvironment({
+        ...productionEnvironment,
+        JWT_ACCESS_TTL: '10m',
+        JWT_REFRESH_TTL: '14d',
+        AUTH_VERIFICATION_TTL_SECONDS: '43200',
+        AUTH_RECOVERY_TTL_SECONDS: '1800',
+        AUTH_LOGIN_MAXIMUM_ATTEMPTS: '6',
+        AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS: '60',
+        AUTH_LOGIN_WINDOW_SECONDS: '600',
+        AUTH_LOGIN_LOCK_SECONDS: '1200',
+      }),
+    ).toMatchObject({
+      JWT_ACCESS_TTL: '10m',
+      JWT_REFRESH_TTL: '14d',
+      AUTH_VERIFICATION_TTL_SECONDS: 43_200,
+      AUTH_RECOVERY_TTL_SECONDS: 1800,
+      AUTH_LOGIN_MAXIMUM_ATTEMPTS: 6,
+      AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS: 60,
+      AUTH_LOGIN_WINDOW_SECONDS: 600,
+      AUTH_LOGIN_LOCK_SECONDS: 1200,
+    });
+  });
+
+  it.each([
+    [{ JWT_ACCESS_TTL: '16m' }, 'JWT_ACCESS_TTL'],
+    [{ JWT_REFRESH_TTL: '31d' }, 'JWT_REFRESH_TTL'],
+    [{ JWT_ACCESS_TTL: '15m', JWT_REFRESH_TTL: '15m' }, 'must exceed'],
+    [{ AUTH_LOGIN_MAXIMUM_ATTEMPTS: '1' }, 'AUTH_LOGIN_MAXIMUM_ATTEMPTS'],
+    [
+      { AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS: '5' },
+      'AUTH_LOGIN_NETWORK_MAXIMUM_ATTEMPTS',
+    ],
+  ])('rejects unsafe authentication policy %j', (override, message) => {
+    expect(() =>
+      validateEnvironment({ ...productionEnvironment, ...override }),
+    ).toThrow(message);
+  });
+
   it.each([
     ['INTERNAL_TOKEN', 'JWT_SECRET'],
     ['VIEWER_TOKEN_SECRET', 'JWT_SECRET'],
