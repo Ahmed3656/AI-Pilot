@@ -55,6 +55,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const setSession = useCallback(async (session: AuthSession) => {
     await Promise.all([
+      storage.set(STORAGE_KEYS.authSessionId, session.session.id),
       storage.set(STORAGE_KEYS.accessToken, session.accessToken),
       storage.set(STORAGE_KEYS.refreshToken, session.refreshToken),
       storage.set(STORAGE_KEYS.authUser, JSON.stringify(session.user)),
@@ -65,6 +66,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const signOut = useCallback(async () => {
     await Promise.all([
+      storage.remove(STORAGE_KEYS.authSessionId),
       storage.remove(STORAGE_KEYS.accessToken),
       storage.remove(STORAGE_KEYS.refreshToken),
       storage.remove(STORAGE_KEYS.authUser),

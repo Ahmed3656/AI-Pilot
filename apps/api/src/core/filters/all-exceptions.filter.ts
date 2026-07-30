@@ -47,6 +47,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
           message: sanitizeMessage(item),
         }));
 
+    if (contract?.contractOptions.retryAfterSeconds)
+      response.setHeader(
+        'Retry-After',
+        String(contract.contractOptions.retryAfterSeconds),
+      );
     response
       .status(status)
       .type('application/json')

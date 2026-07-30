@@ -72,6 +72,7 @@ const en = {
   authNameRequired: 'Enter your name.',
   authFailed: 'Those details did not work. Check them and try again.',
   authUnavailable: 'Authentication is unavailable right now. Try again soon.',
+  authVerificationSent: 'Account created. Verify your email before signing in.',
   authSessionExpired: 'Your session expired. Sign in again to continue.',
   needAccount: 'New to DealPilot?',
   haveAccount: 'Already have an account?',
@@ -335,6 +336,8 @@ const ar: Record<keyof typeof en, string> = {
   authNameRequired: 'أدخل اسمك.',
   authFailed: 'تعذر استخدام هذه البيانات. راجعها وحاول مرة أخرى.',
   authUnavailable: 'خدمة تسجيل الدخول غير متاحة الآن. حاول لاحقاً.',
+  authVerificationSent:
+    'تم إنشاء الحساب. تحقّق من بريدك الإلكتروني قبل تسجيل الدخول.',
   authSessionExpired: 'انتهت صلاحية جلستك. سجّل الدخول مرة أخرى للمتابعة.',
   needAccount: 'جديد في ديل بايلوت؟',
   haveAccount: 'لديك حساب بالفعل؟',

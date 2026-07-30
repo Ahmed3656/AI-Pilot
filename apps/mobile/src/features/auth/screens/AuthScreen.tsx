@@ -60,15 +60,18 @@ export function AuthScreen({
     }
     setIsSubmitting(true);
     try {
-      const session =
-        mode === 'login'
-          ? await login({ email: normalizedEmail, password })
-          : await register({
-              displayName: displayName.trim(),
-              email: normalizedEmail,
-              password,
-            });
-      await setSession(session);
+      if (mode === 'login') {
+        await setSession(await login({ email: normalizedEmail, password }));
+      } else {
+        await register({
+          displayName: displayName.trim(),
+          email: normalizedEmail,
+          password,
+        });
+        setPassword('');
+        setMode('login');
+        showToast(t('authVerificationSent'), 'success');
+      }
     } catch (reason) {
       showToast(
         reason instanceof AuthenticationError && reason.reason === 'invalid'

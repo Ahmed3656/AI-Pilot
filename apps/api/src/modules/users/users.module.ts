@@ -1,6 +1,11 @@
 import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { User } from './entities/user.entity';
 
-@Module({})
-export class UsersModule {
-  // TODO(users): add neutral account entities, repositories, services, and DTOs with the first identity use case.
-}
+const databaseEnabled = process.env.DATABASE_ENABLED === 'true';
+
+@Module({
+  imports: databaseEnabled ? [TypeOrmModule.forFeature([User])] : [],
+  exports: databaseEnabled ? [TypeOrmModule] : [],
+})
+export class UsersModule {}
