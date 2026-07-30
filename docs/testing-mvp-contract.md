@@ -1071,6 +1071,10 @@ interface AuthenticationSessionResource {
 
 Organization creation makes the creator an active `owner` in the same transaction. Invitation creates `invited`; activation requires proof that the authenticated principal owns the invitation address or external identity. Membership transitions and role changes require `expectedVersion`. The last active owner cannot be suspended, revoked, or demoted. Session expiry is clock-driven; refresh rotates its secret without changing the session ID, while revoke is terminal. `listTestingDomainEvents` replays tenant-domain events by opaque `after` sequence with the same no-gap, bounded-retention, cursor-expiry, and tenant authorization rules as run-event history; it returns `DomainEventEnvelope` values and never accepts client-appended events.
 
+### 19.8 Idempotency identity scope
+
+Testing idempotency records are scoped by organization, authenticated principal, HTTP method, canonical path, and key. A record must never replay across an organization or principal boundary, even where a key and request body are otherwise identical.
+
 ## 20. Projects, environments, and environment-scoped targets
 
 ```ts
@@ -1182,6 +1186,10 @@ interface FixtureInstance {
 ```
 
 Credential material is accepted only by a secret-store boundary and is never returned; the public API stores and exposes only the opaque handle and safe metadata. It is forbidden in fixtures, plans, events, evidence, findings, exports, logs, and AI inputs. An expired/revoked handle blocks setup and execution. Fixture versions are immutable; only an approved version may be set up. Setup is idempotent by campaign + version + idempotency key. Cleanup is always permitted from the reserved cleanup budget, is idempotent, and runs on expiry, cancellation, lease loss, terminal failure, or success.
+
+### 21.13 Exact request serialization
+
+Idempotency fingerprinting canonically orders JSON object fields but does not coerce public decimal or timestamp strings. Their exact serialized values are part of the request identity; implementations must not parse and reformat them before fingerprinting.
 
 ## 22. Campaigns and normalized requirements
 
@@ -1663,3 +1671,13 @@ These are recorded choices, not readiness exemptions. Required local inference m
 - `scripts/validate-testing-contract.mjs` is the drift guard executed by `npm run test:testing-contract`, `npm run test:contract`, and the root test suite.
 
 Any contract change updates all five artifacts in the same reviewed change. Component packets implement this contract without modifying DealPilot shopping behavior or claiming planned autonomous-testing behavior is already live.
+
+## 32. Cross-cutting implementation boundaries
+
+Shared infrastructure may support testing modules only through business-neutral ports. It must not import shopping modules or make testing records depend on shopping entities, tables, routes, or terminology.
+
+## 33. Durable request replay
+
+### 33.1 Neutral idempotency infrastructure
+
+The API persists a neutral idempotency record containing organization, principal, method, canonical path, key, request fingerprint, expiry, and the committed response status/body. Records retain outcomes for 24 hours. PostgreSQL implementations serialize same-scope first writes with a transaction-scoped database lock backed by a unique scope constraint; they save a replay only in the transaction that commits the business operation. A changed fingerprint returns `409 IDEMPOTENCY_KEY_REUSED`; an identical request returns the stored status and body. Legacy shopping idempotency remains isolated and is neither renamed nor replaced by this record.
