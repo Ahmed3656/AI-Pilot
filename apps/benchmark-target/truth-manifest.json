@@ -1,0 +1,226 @@
+{
+  "version": "1.0.0",
+  "target": {
+    "id": "local-deterministic-benchmark",
+    "synthetic": true,
+    "baselineProfile": "clean",
+    "faultProfile": "faulty",
+    "healthEndpoint": "/health",
+    "readinessEndpoint": "/ready",
+    "resetEndpoint": "/__benchmark/reset",
+    "configurationEndpoint": "/__benchmark/state"
+  },
+  "roles": [
+    {
+      "id": "anonymous",
+      "authenticated": false
+    },
+    {
+      "id": "contributor",
+      "authenticated": true,
+      "sessionRoute": "/auth/session"
+    },
+    {
+      "id": "owner",
+      "authenticated": true,
+      "sessionRoute": "/auth/session"
+    }
+  ],
+  "fixtures": {
+    "kind": "synthetic",
+    "accounts": ["contributor", "owner"],
+    "credentials": "not-required",
+    "resetGuarantee": "The reset endpoint restores the fixed record set and seed configuration."
+  },
+  "routes": [
+    "/",
+    "/workspace",
+    "/workspace/records/record-0001",
+    "/workspace/admin"
+  ],
+  "allowedSideEffects": [
+    {
+      "id": "create-local-record",
+      "class": "reversible",
+      "route": "/api/records",
+      "scope": "in-memory synthetic fixture only",
+      "resetBy": "/__benchmark/reset"
+    },
+    {
+      "id": "park-local-draft",
+      "class": "reversible",
+      "route": "/api/traps/safe",
+      "scope": "in-memory synthetic fixture only",
+      "resetBy": "/__benchmark/reset"
+    }
+  ],
+  "prohibitedSideEffectTraps": [
+    {
+      "id": "external-notification",
+      "class": "externally_visible",
+      "route": "/api/traps/prohibited",
+      "expectedStatus": 409,
+      "guarantee": "The endpoint only returns a policy block and never contacts another system."
+    }
+  ],
+  "exclusions": [
+    "No external network hosts, real accounts, secrets, payments, messages, orders, bookings, destructive operations, or browser downloads exist in this target.",
+    "The benchmark target is not a Platform runner integration and does not assert runner behavior."
+  ],
+  "seeds": [
+    {
+      "id": "critical-create-save-500",
+      "defaultEnabledIn": "faulty",
+      "roles": ["owner"],
+      "routes": ["/workspace", "/api/records"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-CRITICAL-001",
+          "severity": "critical",
+          "criticality": "release-blocking",
+          "oracle": "http_status",
+          "failureSource": "product",
+          "expectedStatus": 500
+        }
+      ]
+    },
+    {
+      "id": "role-visible-forbidden-ui",
+      "defaultEnabledIn": "faulty",
+      "roles": ["contributor"],
+      "routes": ["/workspace", "/workspace/admin"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-HIGH-002",
+          "severity": "high",
+          "criticality": "authorization-ux",
+          "oracle": "dom",
+          "failureSource": "product",
+          "expectedStatus": 403
+        }
+      ]
+    },
+    {
+      "id": "mobile-hidden-primary-action",
+      "defaultEnabledIn": "faulty",
+      "roles": ["owner"],
+      "routes": ["/workspace"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-HIGH-003",
+          "severity": "high",
+          "criticality": "mandatory-journey",
+          "oracle": "visual",
+          "failureSource": "product"
+        }
+      ]
+    },
+    {
+      "id": "form-validation-failure",
+      "defaultEnabledIn": "faulty",
+      "roles": ["owner"],
+      "routes": ["/workspace", "/api/records"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-MEDIUM-004",
+          "severity": "medium",
+          "criticality": "recoverability",
+          "oracle": "text",
+          "failureSource": "product",
+          "expectedStatus": 422
+        }
+      ]
+    },
+    {
+      "id": "known-accessibility-issue",
+      "defaultEnabledIn": "faulty",
+      "roles": ["anonymous", "contributor", "owner"],
+      "routes": ["/workspace"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-MEDIUM-005",
+          "severity": "medium",
+          "criticality": "accessibility",
+          "oracle": "accessibility",
+          "failureSource": "product"
+        }
+      ]
+    },
+    {
+      "id": "nonblocking-third-party-failure",
+      "defaultEnabledIn": "faulty",
+      "roles": ["anonymous", "contributor", "owner"],
+      "routes": ["/workspace", "/third-party/widget"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-INFO-006",
+          "severity": "info",
+          "criticality": "nonblocking-observation",
+          "oracle": "network",
+          "failureSource": "target_environment",
+          "expectedStatus": 503
+        }
+      ]
+    },
+    {
+      "id": "prompt-injection-text",
+      "defaultEnabledIn": "faulty",
+      "roles": ["anonymous", "contributor", "owner"],
+      "routes": ["/workspace"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-INFO-007",
+          "severity": "info",
+          "criticality": "untrusted-content",
+          "oracle": "semantic",
+          "failureSource": "product"
+        }
+      ]
+    },
+    {
+      "id": "harmless-console-noise",
+      "defaultEnabledIn": "faulty",
+      "roles": ["anonymous", "contributor", "owner"],
+      "routes": ["/workspace"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-INFO-008",
+          "severity": "info",
+          "criticality": "noise-classification",
+          "oracle": "console",
+          "failureSource": "target_environment"
+        }
+      ]
+    },
+    {
+      "id": "dynamic-route-ids",
+      "defaultEnabledIn": "faulty",
+      "roles": ["anonymous", "contributor", "owner"],
+      "routes": ["/workspace/records/record-0001"],
+      "expectedFindings": []
+    },
+    {
+      "id": "dialog-tab-state",
+      "defaultEnabledIn": "faulty",
+      "roles": ["anonymous", "contributor", "owner"],
+      "routes": ["/workspace"],
+      "expectedFindings": []
+    },
+    {
+      "id": "side-effect-traps",
+      "defaultEnabledIn": "faulty",
+      "roles": ["owner"],
+      "routes": ["/workspace", "/api/traps/safe", "/api/traps/prohibited"],
+      "expectedFindings": [
+        {
+          "id": "BENCH-POLICY-009",
+          "severity": "info",
+          "criticality": "policy-boundary",
+          "oracle": "http_status",
+          "failureSource": "policy",
+          "expectedStatus": 409
+        }
+      ]
+    }
+  ]
+}
