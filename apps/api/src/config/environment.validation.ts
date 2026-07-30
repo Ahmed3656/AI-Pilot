@@ -24,6 +24,9 @@ enum LogLevel {
   Warn = 'warn',
   Error = 'error',
 }
+enum ObjectStorageProvider {
+  S3 = 's3',
+}
 
 class EnvironmentVariables {
   @IsEnum(NodeEnvironment) NODE_ENV: NodeEnvironment =
@@ -31,6 +34,18 @@ class EnvironmentVariables {
   @IsInt() @Min(1) PORT = 3000;
   @IsBoolean() DATABASE_ENABLED = false;
   @IsOptional() @IsString() DATABASE_URL?: string;
+  @IsOptional()
+  @IsEnum(ObjectStorageProvider)
+  OBJECT_STORAGE_PROVIDER?: ObjectStorageProvider;
+  @IsOptional() @IsString() OBJECT_STORAGE_BUCKET?: string;
+  @IsOptional() @IsString() OBJECT_STORAGE_REGION?: string;
+  @IsOptional() @IsUrl({ require_tld: false }) OBJECT_STORAGE_ENDPOINT?: string;
+  @IsOptional() @IsString() OBJECT_STORAGE_ACCESS_KEY_ID?: string;
+  @IsOptional() @IsString() OBJECT_STORAGE_SECRET_ACCESS_KEY?: string;
+  @IsOptional() @IsString() OBJECT_STORAGE_KMS_KEY_ID?: string;
+  @IsBoolean() OBJECT_STORAGE_FORCE_PATH_STYLE = false;
+  @IsBoolean() OBJECT_STORAGE_PUBLIC_ACCESS_BLOCKED = false;
+  @IsBoolean() DURABLE_PRIVATE_STORAGE_REQUIRED = false;
   @IsOptional() @IsString() @MinLength(32) JWT_SECRET?: string;
   @IsOptional() @IsString() @MinLength(32) INTERNAL_TOKEN?: string;
   @IsOptional() @IsString() @MinLength(32) VIEWER_TOKEN_SECRET?: string;
@@ -80,6 +95,17 @@ export function validateEnvironment(config: Record<string, unknown>) {
     PORT: numeric('PORT', 3000),
     DATABASE_ENABLED:
       config.DATABASE_ENABLED === true || config.DATABASE_ENABLED === 'true',
+    OBJECT_STORAGE_FORCE_PATH_STYLE:
+      config.OBJECT_STORAGE_FORCE_PATH_STYLE === true ||
+      config.OBJECT_STORAGE_FORCE_PATH_STYLE === 'true',
+    OBJECT_STORAGE_PUBLIC_ACCESS_BLOCKED:
+      config.OBJECT_STORAGE_PUBLIC_ACCESS_BLOCKED === true ||
+      config.OBJECT_STORAGE_PUBLIC_ACCESS_BLOCKED === 'true',
+    DURABLE_PRIVATE_STORAGE_REQUIRED:
+      config.DURABLE_PRIVATE_STORAGE_REQUIRED === true ||
+      config.DURABLE_PRIVATE_STORAGE_REQUIRED === 'true' ||
+      (nodeEnv === NodeEnvironment.Production &&
+        config.DURABLE_PRIVATE_STORAGE_REQUIRED !== 'false'),
     OBSERVABILITY_ENABLED:
       config.OBSERVABILITY_ENABLED !== false &&
       config.OBSERVABILITY_ENABLED !== 'false',
@@ -126,6 +152,28 @@ export function validateEnvironment(config: Record<string, unknown>) {
     if (missing.length)
       throw new Error(
         `Live API configuration is incomplete: ${[...new Set(missing)].join(', ')}`,
+      );
+  }
+  if (validated.DURABLE_PRIVATE_STORAGE_REQUIRED) {
+    const requiredStorage = [
+      'OBJECT_STORAGE_PROVIDER',
+      'OBJECT_STORAGE_BUCKET',
+      'OBJECT_STORAGE_REGION',
+      'OBJECT_STORAGE_ACCESS_KEY_ID',
+      'OBJECT_STORAGE_SECRET_ACCESS_KEY',
+    ] as const;
+    const missingStorage = requiredStorage.filter((key) => !config[key]);
+    if (missingStorage.length)
+      throw new Error(
+        `Durable private object storage is incomplete: ${missingStorage.join(', ')}`,
+      );
+    if (validated.OBJECT_STORAGE_PROVIDER !== ObjectStorageProvider.S3)
+      throw new Error(
+        'Durable private object storage must use the s3 provider',
+      );
+    if (!validated.OBJECT_STORAGE_PUBLIC_ACCESS_BLOCKED)
+      throw new Error(
+        'Durable private object storage must block public access',
       );
   }
   const secrets = [

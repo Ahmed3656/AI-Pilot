@@ -9,6 +9,12 @@ const productionEnvironment = {
   JWT_SECRET: 'jwt-secret-value-that-is-longer-than-32-bytes',
   INTERNAL_TOKEN: 'internal-token-value-that-is-longer-than-32-bytes',
   VIEWER_TOKEN_SECRET: 'viewer-secret-value-that-is-longer-than-32-bytes',
+  OBJECT_STORAGE_PROVIDER: 's3',
+  OBJECT_STORAGE_BUCKET: 'private-testing-evidence',
+  OBJECT_STORAGE_REGION: 'us-east-1',
+  OBJECT_STORAGE_ACCESS_KEY_ID: 'testing-access-key',
+  OBJECT_STORAGE_SECRET_ACCESS_KEY: 'testing-secret-key',
+  OBJECT_STORAGE_PUBLIC_ACCESS_BLOCKED: 'true',
 };
 
 describe('environment validation', () => {
@@ -36,6 +42,15 @@ describe('environment validation', () => {
         DATABASE_ENABLED: 'false',
       }),
     ).toThrow('DATABASE_ENABLED');
+  });
+
+  it('fails closed when required durable private object storage is incomplete', () => {
+    expect(() =>
+      validateEnvironment({
+        ...productionEnvironment,
+        OBJECT_STORAGE_BUCKET: undefined,
+      }),
+    ).toThrow('OBJECT_STORAGE_BUCKET');
   });
 
   it.each([

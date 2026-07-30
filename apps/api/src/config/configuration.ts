@@ -12,6 +12,22 @@ export function configuration() {
         process.env.DATABASE_URL ??
         'postgresql://agent:agent@localhost:5432/agent_platform',
     },
+    objectStorage: {
+      provider: process.env.OBJECT_STORAGE_PROVIDER,
+      bucket: process.env.OBJECT_STORAGE_BUCKET,
+      region: process.env.OBJECT_STORAGE_REGION,
+      endpoint: process.env.OBJECT_STORAGE_ENDPOINT,
+      accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY_ID,
+      secretAccessKey: process.env.OBJECT_STORAGE_SECRET_ACCESS_KEY,
+      kmsKeyId: process.env.OBJECT_STORAGE_KMS_KEY_ID,
+      forcePathStyle: process.env.OBJECT_STORAGE_FORCE_PATH_STYLE === 'true',
+      publicAccessBlocked:
+        process.env.OBJECT_STORAGE_PUBLIC_ACCESS_BLOCKED === 'true',
+      durablePrivateStorageRequired:
+        process.env.DURABLE_PRIVATE_STORAGE_REQUIRED === 'true' ||
+        ((process.env.NODE_ENV ?? 'development') === 'production' &&
+          process.env.DURABLE_PRIVATE_STORAGE_REQUIRED !== 'false'),
+    },
     observability: {
       enabled: process.env.OBSERVABILITY_ENABLED !== 'false',
       logLevel: process.env.LOG_LEVEL ?? 'info',
