@@ -1,0 +1,14 @@
+{
+  "name": "@agent-platform/benchmark-target",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local deterministic benchmark target for the autonomous testing platform",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test",
+    "check": "node --check src/server.mjs && node --test test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
