@@ -14,8 +14,11 @@ import { RequestContextMiddleware } from './core/middlewares/request-context.mid
 import { ControllerPerformanceInterceptor } from './core/observability/controller-performance.interceptor';
 import { ObservabilityModule } from './core/observability/observability.module';
 import { DatabaseModule } from './database/database.module';
+import {
+  NeutralFoundationModule,
+  NeutralFoundationModuleOptions,
+} from './infrastructure/foundation';
 import { AiModule } from './modules/ai/ai.module';
-import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { AutomationModule } from './modules/automation/automation.module';
 import { DevicesModule } from './modules/devices/devices.module';
@@ -26,7 +29,6 @@ import { PermissionsModule } from './modules/permissions/permissions.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { ShoppingModule } from './modules/shopping/shopping.module';
-import { StorageModule } from './modules/storage/storage.module';
 import { SystemModule } from './modules/system/system.module';
 import { TasksModule } from './modules/tasks/tasks.module';
 import { UsersModule } from './modules/users/users.module';
@@ -42,6 +44,7 @@ import { WorkflowsModule } from './modules/workflows/workflows.module';
     }),
     ObservabilityModule,
     DatabaseModule.register(),
+    NeutralFoundationModule.register(foundationModuleOptions()),
     HealthModule,
     AuthModule,
     UsersModule,
@@ -49,7 +52,6 @@ import { WorkflowsModule } from './modules/workflows/workflows.module';
     PermissionsModule,
     FilesModule,
     NotificationsModule,
-    AuditModule,
     AiModule,
     AutomationModule,
     DevicesModule,
@@ -57,7 +59,6 @@ import { WorkflowsModule } from './modules/workflows/workflows.module';
     WorkflowsModule,
     SettingsModule,
     ShoppingModule,
-    StorageModule,
     SystemModule,
   ],
   providers: [
@@ -77,4 +78,16 @@ export class AppModule implements NestModule {
       .apply(RequestContextMiddleware)
       .forRoutes({ path: '*', method: RequestMethod.ALL });
   }
+}
+
+function foundationModuleOptions(): NeutralFoundationModuleOptions {
+  const runtime = configuration();
+  return {
+    databaseEnabled: runtime.database.enabled,
+    allowInMemoryObjectStorage:
+      runtime.app.nodeEnv !== 'production' &&
+      !runtime.objectStorage.durablePrivateStorageRequired,
+    durablePrivateStorageRequired:
+      runtime.objectStorage.durablePrivateStorageRequired,
+  };
 }

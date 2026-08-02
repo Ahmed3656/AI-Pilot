@@ -1,12 +1,12 @@
 import { Column, Entity, Index } from 'typeorm';
-import { BaseEntity } from '../../../database/entities/base.entity';
+import { UtcBaseEntity } from '../../../database/entities/utc-base.entity';
 
 export type AuthenticationSessionStatus = 'active' | 'revoked' | 'expired';
 
 @Entity({ name: 'authentication_sessions' })
 @Index(['principalId'])
 @Index(['rotationFamilyId'])
-export class AuthenticationSession extends BaseEntity {
+export class AuthenticationSession extends UtcBaseEntity {
   @Column({ name: 'principal_id', type: 'varchar', length: 26 })
   principalId!: string;
 
@@ -16,13 +16,13 @@ export class AuthenticationSession extends BaseEntity {
   @Column({ name: 'rotation_family_id', type: 'varchar', length: 26 })
   rotationFamilyId!: string;
 
-  @Column({ name: 'issued_at', type: 'timestamp' })
+  @Column({ name: 'issued_at', type: 'timestamptz' })
   issuedAt!: Date;
 
-  @Column({ name: 'expires_at', type: 'timestamp' })
+  @Column({ name: 'expires_at', type: 'timestamptz' })
   expiresAt!: Date;
 
-  @Column({ name: 'revoked_at', type: 'timestamp', nullable: true })
+  @Column({ name: 'revoked_at', type: 'timestamptz', nullable: true })
   revokedAt!: Date | null;
 
   @Column({

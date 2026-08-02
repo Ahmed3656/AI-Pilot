@@ -1,4 +1,4 @@
-import { Module, Provider } from '@nestjs/common';
+import { DynamicModule, Module, Provider } from '@nestjs/common';
 import { getDataSourceToken, TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import {
@@ -18,34 +18,43 @@ const entities = [
   OrderedEventEntity,
   PrunedEventCursorEntity,
 ];
-const databaseEnabled = process.env.DATABASE_ENABLED === 'true';
+export interface OrderedEventsModuleOptions {
+  databaseEnabled: boolean;
+}
 
-const repositoryProvider: Provider = databaseEnabled
-  ? {
-      provide: ORDERED_EVENT_REPOSITORY,
-      useFactory: (dataSource: DataSource) =>
-        new TypeormOrderedEventRepository(dataSource),
-      inject: [getDataSourceToken()],
-    }
-  : {
-      provide: ORDERED_EVENT_REPOSITORY,
-      useClass: InMemoryOrderedEventRepository,
+@Module({})
+export class OrderedEventsModule {
+  static register(options: OrderedEventsModuleOptions): DynamicModule {
+    const repositoryProvider: Provider = options.databaseEnabled
+      ? {
+          provide: ORDERED_EVENT_REPOSITORY,
+          useFactory: (dataSource: DataSource) =>
+            new TypeormOrderedEventRepository(dataSource),
+          inject: [getDataSourceToken()],
+        }
+      : {
+          provide: ORDERED_EVENT_REPOSITORY,
+          useClass: InMemoryOrderedEventRepository,
+        };
+
+    return {
+      module: OrderedEventsModule,
+      imports: options.databaseEnabled
+        ? [TypeOrmModule.forFeature(entities)]
+        : [],
+      providers: [
+        repositoryProvider,
+        {
+          provide: ORDERED_EVENT_PUBLISHER,
+          useClass: InProcessOrderedEventPublisher,
+        },
+        OrderedEventService,
+      ],
+      exports: [
+        ORDERED_EVENT_REPOSITORY,
+        ORDERED_EVENT_PUBLISHER,
+        OrderedEventService,
+      ],
     };
-
-@Module({
-  imports: [...(databaseEnabled ? [TypeOrmModule.forFeature(entities)] : [])],
-  providers: [
-    repositoryProvider,
-    {
-      provide: ORDERED_EVENT_PUBLISHER,
-      useClass: InProcessOrderedEventPublisher,
-    },
-    OrderedEventService,
-  ],
-  exports: [
-    ORDERED_EVENT_REPOSITORY,
-    ORDERED_EVENT_PUBLISHER,
-    OrderedEventService,
-  ],
-})
-export class OrderedEventsModule {}
+  }
+}

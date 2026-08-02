@@ -12,6 +12,14 @@ export interface RequestContext {
   reportedNPlusOne: Set<string>;
 }
 
+export function canonicalRequestRoute(value: string): string {
+  try {
+    return new URL(value, 'http://request.local').pathname;
+  } catch {
+    return value.split(/[?#]/, 1)[0] || '/';
+  }
+}
+
 @Injectable()
 export class RequestContextService {
   private readonly storage = new AsyncLocalStorage<RequestContext>();

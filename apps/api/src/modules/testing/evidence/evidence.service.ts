@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
+import type { PersistenceTransaction } from '../../../database/persistence-transaction';
 import type {
   ObjectStoragePort,
   StoredObject,
-} from '../../../infrastructure/object-storage';
+} from '../../../infrastructure/object-storage/object-storage.port';
 import type { EvidenceArtifactRepository } from './evidence-artifact.repository';
 import {
   EVIDENCE_MEDIA_TYPES,
@@ -33,14 +34,21 @@ export class EvidenceService {
     private readonly maxAccessTtlMs = 15 * 60_000,
   ) {}
 
-  async upload(upload: EvidenceUpload): Promise<EvidenceArtifactMetadata> {
+  async upload(
+    upload: EvidenceUpload,
+    transaction?: PersistenceTransaction,
+  ): Promise<EvidenceArtifactMetadata> {
     validateUpload(upload);
-    const existing = await this.repository.find(upload.tenantId, upload.id);
+    const existing = await this.repository.find(
+      upload.tenantId,
+      upload.id,
+      transaction,
+    );
     if (existing) {
       if (matches(existing, upload)) return existing;
       throw new EvidenceConflictError('Evidence ID is immutable');
     }
-    if (upload.parentArtifactId) await this.validateParent(upload);
+    if (upload.parentArtifactId) await this.validateParent(upload, transaction);
 
     const metadata: EvidenceArtifactMetadata = {
       ...withoutBody(upload),
@@ -55,7 +63,10 @@ export class EvidenceService {
       byteLength: metadata.byteLength,
       sha256: metadata.sha256,
     });
-    return this.repository.save(metadata);
+    transaction?.afterRollback(() =>
+      this.storage.delete(metadata.tenantId, objectName(metadata.id)),
+    );
+    return this.repository.save(metadata, transaction);
   }
 
   async grantAccess(
@@ -102,10 +113,14 @@ export class EvidenceService {
     return { evidenceId: artifact.id };
   }
 
-  private async validateParent(upload: EvidenceUpload): Promise<void> {
+  private async validateParent(
+    upload: EvidenceUpload,
+    transaction?: PersistenceTransaction,
+  ): Promise<void> {
     const parent = await this.repository.find(
       upload.tenantId,
       upload.parentArtifactId!,
+      transaction,
     );
     if (!parent || parent.deletionState !== 'available')
       throw new EvidenceValidationError('Evidence parent is unavailable');

@@ -1,9 +1,15 @@
 import { RequestContextService } from '../../core/request-context/request-context.service';
+import { PersistenceTransactionLifecycle } from '../../database/persistence-transaction';
+import type { EntityManager, Repository } from 'typeorm';
 import { MVP_AUDIT_ACTIONS } from './audit-actions';
 import { AuditMetadataError } from './audit-metadata';
 import { AuditRequestHelper } from './audit-request.helper';
 import { AppendAuditRecordInput, AuditService } from './audit.service';
-import { InMemoryAuditRepository } from './repositories/audit.repository';
+import {
+  InMemoryAuditRepository,
+  TypeormAuditRepository,
+} from './repositories/audit.repository';
+import { AuditRecord } from './entities/audit-record.entity';
 
 const occurredAt = new Date('2026-07-29T09:00:00.000Z');
 
@@ -129,6 +135,47 @@ describe('AuditService', () => {
     await expect(
       service.listForOrganization({ organizationId: 'org_alpha' }),
     ).resolves.toMatchObject({ items: [] });
+  });
+
+  it('joins a shared in-memory transaction rollback', async () => {
+    const transaction = new PersistenceTransactionLifecycle();
+    await service.appendRequired(auditInput(), transaction);
+
+    await transaction.rollback();
+
+    await expect(
+      service.listForOrganization({ organizationId: 'org_alpha' }),
+    ).resolves.toMatchObject({ items: [] });
+  });
+});
+
+describe('TypeormAuditRepository', () => {
+  it('uses the caller-owned entity manager', async () => {
+    const root = {
+      create: jest.fn(),
+      save: jest.fn(),
+    };
+    const getRepository = jest.fn();
+    const transactional = {
+      create: jest.fn((record: AuditRecord) => record),
+      save: jest.fn((record: AuditRecord) => Promise.resolve(record)),
+    };
+    getRepository.mockReturnValue(transactional);
+    const manager = {
+      getRepository,
+    } as unknown as EntityManager;
+    const service = new AuditService(
+      new TypeormAuditRepository(root as unknown as Repository<AuditRecord>),
+    );
+
+    await service.appendRequired(
+      auditInput(),
+      new PersistenceTransactionLifecycle(manager),
+    );
+
+    expect(getRepository).toHaveBeenCalledWith(AuditRecord);
+    expect(transactional.save).toHaveBeenCalledTimes(1);
+    expect(root.save).not.toHaveBeenCalled();
   });
 });
 

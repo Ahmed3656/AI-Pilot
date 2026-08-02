@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { PersistenceTransaction } from '../../database/persistence-transaction';
 import {
   ORDERED_EVENT_PUBLISHER,
   OrderedEventPublisher,
@@ -27,9 +28,14 @@ export class OrderedEventService {
 
   async append(
     input: AppendOrderedEventInput,
+    transaction?: PersistenceTransaction,
   ): Promise<AppendOrderedEventResult> {
-    const result = await this.repository.append(input);
-    if (!result.duplicate) this.publisher.publish(result.event);
+    const result = await this.repository.append(input, transaction);
+    if (!result.duplicate) {
+      if (transaction)
+        transaction.afterCommit(() => this.publisher.publish(result.event));
+      else this.publisher.publish(result.event);
+    }
     return result;
   }
 

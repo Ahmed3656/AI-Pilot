@@ -1,5 +1,5 @@
 import { Column, Entity, Index, Unique } from 'typeorm';
-import { BaseEntity } from '../../database/entities/base.entity';
+import { UtcBaseEntity } from '../../database/entities/utc-base.entity';
 
 @Entity({ name: 'idempotency_records' })
 @Unique('uq_idempotency_record_scope', [
@@ -10,7 +10,7 @@ import { BaseEntity } from '../../database/entities/base.entity';
   'key',
 ])
 @Index('idx_idempotency_record_expires_at', ['expiresAt'])
-export class IdempotencyRecord extends BaseEntity {
+export class IdempotencyRecord extends UtcBaseEntity {
   // This uniqueness boundary is the final backstop for all database writers.
   @Column({ name: 'organization_id', type: 'varchar', length: 128 })
   organizationId!: string;

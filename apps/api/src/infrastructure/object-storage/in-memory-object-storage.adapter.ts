@@ -1,12 +1,15 @@
 import {
   ObjectNotFoundError,
+  type ObjectStorageHealthPort,
   type ObjectStoragePort,
   type ObjectStoragePutRequest,
   type StoredObject,
 } from './object-storage.port';
 import { verifyObject } from './object-verification';
 
-export class InMemoryObjectStorageAdapter implements ObjectStoragePort {
+export class InMemoryObjectStorageAdapter
+  implements ObjectStoragePort, ObjectStorageHealthPort
+{
   private readonly objects = new Map<string, StoredObject>();
 
   put(request: ObjectStoragePutRequest): Promise<void> {
@@ -29,6 +32,10 @@ export class InMemoryObjectStorageAdapter implements ObjectStoragePort {
   delete(tenantId: string, objectName: string): Promise<void> {
     this.objects.delete(this.key(tenantId, objectName));
     return Promise.resolve();
+  }
+
+  status(): Promise<'up'> {
+    return Promise.resolve('up');
   }
 
   private key(tenantId: string, objectName: string): string {

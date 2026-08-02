@@ -2,7 +2,7 @@
 
 `infra/phase1/docker-compose.yml` is the single canonical runtime stack. The root `docker-compose.yml` only includes this file, so root and infrastructure commands cannot drift into different deployments.
 
-The stack runs PostgreSQL, a one-shot database migration gate, the NestJS API, the FastAPI AI service, one Selenium standalone Chromium session with noVNC, Caddy, and an optional Cloudflare Tunnel connector. Egypt is fixed to market `EG`, currency `EGP`, timezone `Africa/Cairo`, and locales `ar-EG`/`en-EG`.
+The stack runs PostgreSQL, a one-shot database migration gate, the NestJS API, the FastAPI AI service, one Selenium standalone Chromium session with noVNC, Caddy, and an optional Cloudflare Tunnel connector. Egypt is fixed to market `EG`, currency `EGP`, timezone `Africa/Cairo`, and locales `ar-EG`/`en-EG`. This remains the isolated legacy shopping runtime: it explicitly disables the autonomous-testing durable evidence store, and that foundation stays unavailable rather than falling back to in-memory storage in production.
 
 ## Prerequisites
 

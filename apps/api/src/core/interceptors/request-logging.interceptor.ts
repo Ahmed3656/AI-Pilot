@@ -11,8 +11,10 @@ import { Request, Response } from 'express';
 import { Observable, catchError, finalize, throwError } from 'rxjs';
 import { errorFields } from '../observability/performance-tracker';
 import { StructuredLogger } from '../observability/structured-logger';
-import { redactUrl } from '../observability/structured-logger';
-import { RequestContextService } from '../request-context/request-context.service';
+import {
+  canonicalRequestRoute,
+  RequestContextService,
+} from '../request-context/request-context.service';
 
 @Injectable()
 export class RequestLoggingInterceptor implements NestInterceptor {
@@ -30,7 +32,7 @@ export class RequestLoggingInterceptor implements NestInterceptor {
     let failure: unknown;
     this.logger.info('http.request.started', {
       method: request.method,
-      route: redactUrl(request.originalUrl),
+      route: canonicalRequestRoute(request.originalUrl),
       userAgent: request.header('user-agent'),
     });
 
@@ -55,7 +57,7 @@ export class RequestLoggingInterceptor implements NestInterceptor {
               : response.statusCode;
         const fields = {
           method: request.method,
-          route: redactUrl(request.originalUrl),
+          route: canonicalRequestRoute(request.originalUrl),
           statusCode,
           durationMs: rounded(durationMs),
           eventLoopUtilization: rounded(eventLoop.utilization),

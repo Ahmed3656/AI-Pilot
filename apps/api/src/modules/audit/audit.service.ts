@@ -1,5 +1,4 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { EntityManager } from 'typeorm';
 import { AuditAction } from './audit-actions';
 import { AuditMetadata, validateAuditMetadata } from './audit-metadata';
 import {
@@ -11,6 +10,7 @@ import {
   AUDIT_REPOSITORY,
   AuditCursor,
   AuditRepository,
+  AuditTransaction,
 } from './repositories/audit.repository';
 
 export interface AppendAuditRecordInput {
@@ -51,17 +51,17 @@ export class AuditService {
 
   async append(
     input: AppendAuditRecordInput,
-    manager?: EntityManager,
+    transaction?: AuditTransaction,
   ): Promise<AuditRecord> {
-    return this.records.append(this.newRecord(input), manager);
+    return this.records.append(this.newRecord(input), transaction);
   }
 
   async appendRequired(
     input: AppendAuditRecordInput,
-    manager?: EntityManager,
+    transaction?: AuditTransaction,
   ): Promise<AuditRecord> {
     // Propagate persistence failures so the caller's privileged transaction rolls back.
-    return this.append(input, manager);
+    return this.append(input, transaction);
   }
 
   async runAtomically<T>(

@@ -119,9 +119,10 @@ export function fingerprintQuery(query: string): string {
 }
 
 export function errorFields(error: unknown): Record<string, unknown> {
+  // Exception messages frequently include provider URLs, tokens, or submitted data.
   return error instanceof Error
-    ? { errorName: error.name, errorMessage: error.message }
-    : { errorMessage: String(error) };
+    ? { errorName: error.name }
+    : { errorName: 'NonErrorFailure' };
 }
 
 function rounded(value: number): number {

@@ -1,5 +1,5 @@
 import { Column, Entity, Index } from 'typeorm';
-import { BaseEntity } from '../../../database/entities/base.entity';
+import { UtcBaseEntity } from '../../../database/entities/utc-base.entity';
 import type {
   EvidenceDeletionState,
   EvidenceKind,
@@ -12,7 +12,7 @@ import type {
 @Index('idx_testing_evidence_tenant_id', ['tenantId', 'id'])
 @Index(['tenantId', 'retentionExpiresAt'])
 @Index(['tenantId', 'executionId'])
-export class TestingEvidenceArtifact extends BaseEntity {
+export class TestingEvidenceArtifact extends UtcBaseEntity {
   @Column({ name: 'tenant_id', type: 'varchar', length: 128 })
   tenantId!: string;
 

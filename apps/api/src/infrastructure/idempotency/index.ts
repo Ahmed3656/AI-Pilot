@@ -1,5 +1,9 @@
-export { IdempotencyModule } from './idempotency.module';
+export {
+  IdempotencyModule,
+  type IdempotencyModuleOptions,
+} from './idempotency.module';
 export { IdempotencyService } from './idempotency.service';
+export { InMemoryIdempotencyRepository } from './in-memory-idempotency.repository';
 export {
   IDEMPOTENCY_CLOCK,
   IDEMPOTENCY_REPOSITORY,

@@ -1,13 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import type { PersistenceTransaction } from '../../../database/persistence-transaction';
 import { TestingEvidenceArtifact } from './evidence-artifact.entity';
 import type { EvidenceArtifactMetadata } from './evidence.types';
 
 export interface EvidenceArtifactRepository {
-  find(tenantId: string, id: string): Promise<EvidenceArtifactMetadata | null>;
-  save(metadata: EvidenceArtifactMetadata): Promise<EvidenceArtifactMetadata>;
-  expired(now: Date): Promise<EvidenceArtifactMetadata[]>;
+  find(
+    tenantId: string,
+    id: string,
+    transaction?: PersistenceTransaction,
+  ): Promise<EvidenceArtifactMetadata | null>;
+  save(
+    metadata: EvidenceArtifactMetadata,
+    transaction?: PersistenceTransaction,
+  ): Promise<EvidenceArtifactMetadata>;
+  expired(
+    now: Date,
+    transaction?: PersistenceTransaction,
+  ): Promise<EvidenceArtifactMetadata[]>;
 }
 
 export const EVIDENCE_ARTIFACT_REPOSITORY = Symbol(
@@ -22,11 +33,17 @@ export class InMemoryEvidenceArtifactRepository implements EvidenceArtifactRepos
     return Promise.resolve(artifact ? clone(artifact) : null);
   }
 
-  save(metadata: EvidenceArtifactMetadata): Promise<EvidenceArtifactMetadata> {
-    this.artifacts.set(
-      this.key(metadata.tenantId, metadata.id),
-      clone(metadata),
-    );
+  save(
+    metadata: EvidenceArtifactMetadata,
+    transaction?: PersistenceTransaction,
+  ): Promise<EvidenceArtifactMetadata> {
+    const key = this.key(metadata.tenantId, metadata.id);
+    const previous = this.artifacts.get(key);
+    this.artifacts.set(key, clone(metadata));
+    transaction?.afterRollback(() => {
+      if (previous) this.artifacts.set(key, clone(previous));
+      else this.artifacts.delete(key);
+    });
     return Promise.resolve(clone(metadata));
   }
 
@@ -57,19 +74,24 @@ export class TypeormEvidenceArtifactRepository implements EvidenceArtifactReposi
   async find(
     tenantId: string,
     id: string,
+    transaction?: PersistenceTransaction,
   ): Promise<EvidenceArtifactMetadata | null> {
-    const artifact = await this.artifacts.findOne({ where: { tenantId, id } });
+    const artifact = await this.repository(transaction).findOne({
+      where: { tenantId, id },
+    });
     return artifact ? fromEntity(artifact) : null;
   }
 
   async save(
     metadata: EvidenceArtifactMetadata,
+    transaction?: PersistenceTransaction,
   ): Promise<EvidenceArtifactMetadata> {
-    const existing = await this.artifacts.findOne({
+    const artifacts = this.repository(transaction);
+    const existing = await artifacts.findOne({
       where: { tenantId: metadata.tenantId, id: metadata.id },
     });
-    const saved = await this.artifacts.save(
-      this.artifacts.create({
+    const saved = await artifacts.save(
+      artifacts.create({
         ...(existing ?? {}),
         ...metadata,
         byteLength: String(metadata.byteLength),
@@ -80,13 +102,25 @@ export class TypeormEvidenceArtifactRepository implements EvidenceArtifactReposi
     return fromEntity(saved);
   }
 
-  async expired(now: Date): Promise<EvidenceArtifactMetadata[]> {
-    const artifacts = await this.artifacts
+  async expired(
+    now: Date,
+    transaction?: PersistenceTransaction,
+  ): Promise<EvidenceArtifactMetadata[]> {
+    const artifacts = await this.repository(transaction)
       .createQueryBuilder('artifact')
       .where('artifact.deletion_state = :state', { state: 'available' })
       .andWhere('artifact.retention_expires_at <= :now', { now })
       .getMany();
     return artifacts.map(fromEntity);
+  }
+
+  private repository(
+    transaction?: PersistenceTransaction,
+  ): Repository<TestingEvidenceArtifact> {
+    if (!transaction) return this.artifacts;
+    if (!transaction.manager)
+      throw new Error('Evidence transaction requires an entity manager');
+    return transaction.manager.getRepository(TestingEvidenceArtifact);
   }
 }
 

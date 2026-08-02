@@ -1,4 +1,4 @@
-import { EntityManager } from 'typeorm';
+import type { PersistenceTransaction } from '../../database/persistence-transaction';
 
 export type JsonPrimitive = boolean | null | number | string;
 export type JsonValue =
@@ -17,9 +17,7 @@ export interface IdempotencyResponse<T extends JsonValue = JsonValue> {
   body: T;
 }
 
-export interface IdempotencyTransaction {
-  readonly manager?: EntityManager;
-}
+export type IdempotencyTransaction = PersistenceTransaction;
 
 export type IdempotencyExecution<T extends JsonValue> =
   | { kind: 'executed'; response: IdempotencyResponse<T> }

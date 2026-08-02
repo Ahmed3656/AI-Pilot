@@ -1,11 +1,11 @@
 import { Column, Entity, Index } from 'typeorm';
-import { BaseEntity } from '../../../database/entities/base.entity';
+import { UtcBaseEntity } from '../../../database/entities/utc-base.entity';
 
 export type PasswordHashAlgorithm = 'argon2id' | 'legacy_scrypt';
 
 @Entity({ name: 'password_credentials' })
 @Index(['userId'], { unique: true })
-export class PasswordCredential extends BaseEntity {
+export class PasswordCredential extends UtcBaseEntity {
   @Column({ name: 'user_id', type: 'varchar', length: 26 })
   userId!: string;
 

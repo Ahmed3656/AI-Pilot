@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { Brackets, EntityManager, Repository } from 'typeorm';
+import {
+  isPersistenceTransaction,
+  type PersistenceTransaction,
+} from '../../../database/persistence-transaction';
 import { AuditRecord } from '../entities/audit-record.entity';
 
 export const AUDIT_REPOSITORY = Symbol('AUDIT_REPOSITORY');
@@ -14,9 +18,14 @@ export interface AuditRecordPage {
   hasMore: boolean;
 }
 
+export type AuditTransaction = EntityManager | PersistenceTransaction;
+
 export interface AuditRepository {
   // Audit records are append-only; mutation and deletion are intentionally absent.
-  append(record: AuditRecord, manager?: EntityManager): Promise<AuditRecord>;
+  append(
+    record: AuditRecord,
+    transaction?: AuditTransaction,
+  ): Promise<AuditRecord>;
   listByOrganization(
     organizationId: string,
     after: AuditCursor | undefined,
@@ -31,7 +40,11 @@ export interface AuditRepository {
 export class TypeormAuditRepository implements AuditRepository {
   constructor(private readonly records: Repository<AuditRecord>) {}
 
-  append(record: AuditRecord, manager?: EntityManager): Promise<AuditRecord> {
+  append(
+    record: AuditRecord,
+    transaction?: AuditTransaction,
+  ): Promise<AuditRecord> {
+    const manager = transactionManager(transaction);
     const repository = manager?.getRepository(AuditRecord) ?? this.records;
     return repository.save(repository.create(record));
   }
@@ -78,9 +91,17 @@ export class TypeormAuditRepository implements AuditRepository {
 export class InMemoryAuditRepository implements AuditRepository {
   private records: AuditRecord[] = [];
 
-  append(record: AuditRecord): Promise<AuditRecord> {
+  append(
+    record: AuditRecord,
+    transaction?: AuditTransaction,
+  ): Promise<AuditRecord> {
     const stored = cloneRecord(record);
     this.records.push(stored);
+    if (isPersistenceTransaction(transaction))
+      transaction.afterRollback(() => {
+        const index = this.records.findIndex((item) => item.id === stored.id);
+        if (index >= 0) this.records.splice(index, 1);
+      });
     return Promise.resolve(cloneRecord(stored));
   }
 
@@ -108,6 +129,16 @@ export class InMemoryAuditRepository implements AuditRepository {
     this.records = transactional.records.map(cloneRecord);
     return result;
   }
+}
+
+function transactionManager(
+  transaction: AuditTransaction | undefined,
+): EntityManager | undefined {
+  if (!transaction) return undefined;
+  if (!isPersistenceTransaction(transaction)) return transaction;
+  if (!transaction.manager)
+    throw new Error('Audit transaction requires an entity manager');
+  return transaction.manager;
 }
 
 function isAfterCursor(record: AuditRecord, after: AuditCursor): boolean {

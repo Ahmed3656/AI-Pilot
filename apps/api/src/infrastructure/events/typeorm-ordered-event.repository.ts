@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
+import type { PersistenceTransaction } from '../../database/persistence-transaction';
 import {
   eventIdConflict,
   expiredCursor,
@@ -51,9 +52,12 @@ export class TypeormOrderedEventRepository implements OrderedEventRepository {
 
   async append(
     input: AppendOrderedEventInput,
+    transaction?: PersistenceTransaction,
   ): Promise<AppendOrderedEventResult> {
     const prepared = prepareOrderedEvent(input);
-    return await this.dataSource.transaction(async (manager) => {
+    const append = async (
+      manager: EntityManager,
+    ): Promise<AppendOrderedEventResult> => {
       // The transaction lock serializes reuse of one global event ID, including across streams.
       await manager.query(
         'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
@@ -154,7 +158,13 @@ export class TypeormOrderedEventRepository implements OrderedEventRepository {
       );
       if (!inserted) throw new Error('Ordered event insert returned no row');
       return { event: rowToEvent(inserted), duplicate: false };
-    });
+    };
+    if (transaction) {
+      if (!transaction.manager)
+        throw new Error('Ordered event transaction requires an entity manager');
+      return append(transaction.manager);
+    }
+    return this.dataSource.transaction(append);
   }
 
   async readPage(input: ReadOrderedEventsInput): Promise<OrderedEventPage> {

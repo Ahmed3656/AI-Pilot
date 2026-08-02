@@ -8,12 +8,12 @@ export class LoginThrottle {
   @Column({ name: 'attempt_count', type: 'integer', default: 0 })
   attemptCount = 0;
 
-  @Column({ name: 'window_started_at', type: 'timestamp' })
+  @Column({ name: 'window_started_at', type: 'timestamptz' })
   windowStartedAt!: Date;
 
-  @Column({ name: 'locked_until', type: 'timestamp', nullable: true })
+  @Column({ name: 'locked_until', type: 'timestamptz', nullable: true })
   lockedUntil!: Date | null;
 
-  @Column({ name: 'updated_at', type: 'timestamp' })
+  @Column({ name: 'updated_at', type: 'timestamptz' })
   updatedAt!: Date;
 }

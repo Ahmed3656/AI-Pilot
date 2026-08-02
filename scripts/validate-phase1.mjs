@@ -43,6 +43,7 @@ assert.match(
 );
 assert.match(compose, /to_regclass\('public\.shopping_runs'\)/);
 assert.match(compose, /AI_OPENROUTER_API_KEY/);
+assert.match(compose, /DURABLE_PRIVATE_STORAGE_REQUIRED: ['"]false['"]/);
 assert.equal(
   (compose.match(/secrets:\s*\n\s*- ai_openrouter_api_key/g) ?? []).length,
   1,
@@ -68,6 +69,7 @@ assert.match(compose, /data-plane:[\s\S]*internal: true/);
 for (const required of [
   'POSTGRES_PASSWORD',
   'JWT_SECRET',
+  'DURABLE_PRIVATE_STORAGE_REQUIRED',
   'AI_SERVICE_URL',
   'INTERNAL_TOKEN',
   'VIEWER_TOKEN_SECRET',

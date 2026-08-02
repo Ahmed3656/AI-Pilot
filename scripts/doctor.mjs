@@ -11,19 +11,30 @@ function commandVersion(
   label,
   command,
   args,
-  { required = true, shell = false } = {},
+  { required = true, shell = false, minimumMajor, minimumMinor = 0 } = {},
 ) {
   const result = spawnSync(command, args, {
     cwd: root,
     encoding: 'utf8',
     shell,
   });
-  const ok = result.status === 0;
+  const detail = result.status === 0 ? result.stdout.trim() : 'not available';
+  const match = /(?:^|\s)v?(\d+)\.(\d+)/.exec(detail);
+  const versionSupported =
+    minimumMajor === undefined ||
+    (match !== null &&
+      (Number(match[1]) > minimumMajor ||
+        (Number(match[1]) === minimumMajor &&
+          Number(match[2]) >= minimumMinor)));
+  const ok = result.status === 0 && versionSupported;
   checks.push({
     label,
     ok,
     required,
-    detail: ok ? result.stdout.trim() : 'not available',
+    detail:
+      result.status === 0 && !versionSupported
+        ? `${detail} (upgrade required)`
+        : detail,
   });
 }
 
@@ -35,10 +46,13 @@ checks.push({
 });
 const npmCli = process.env.npm_execpath;
 if (npmCli) {
-  commandVersion('npm', process.execPath, [npmCli, '--version']);
+  commandVersion('npm 10+', process.execPath, [npmCli, '--version'], {
+    minimumMajor: 10,
+  });
 } else {
-  commandVersion('npm', 'npm', ['--version'], {
+  commandVersion('npm 10+', 'npm', ['--version'], {
     shell: process.platform === 'win32',
+    minimumMajor: 10,
   });
 }
 commandVersion(
@@ -54,12 +68,19 @@ const venvPython =
   process.platform === 'win32'
     ? resolve(root, '.venv', 'Scripts', 'python.exe')
     : resolve(root, '.venv', 'bin', 'python');
-checks.push({
-  label: 'AI virtual environment',
-  ok: existsSync(venvPython),
-  required: true,
-  detail: existsSync(venvPython) ? venvPython : 'run `npm run setup:ai`',
-});
+if (existsSync(venvPython)) {
+  commandVersion('Python 3.12+', venvPython, ['--version'], {
+    minimumMajor: 3,
+    minimumMinor: 12,
+  });
+} else {
+  checks.push({
+    label: 'Python 3.12+',
+    ok: false,
+    required: true,
+    detail: 'run `npm run setup:ai`',
+  });
+}
 checks.push({
   label: 'Node dependencies',
   ok: existsSync(resolve(root, 'node_modules')),

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { InMemoryObjectStorageAdapter } from '../../../infrastructure/object-storage';
+import { PersistenceTransactionLifecycle } from '../../../database/persistence-transaction';
+import { InMemoryObjectStorageAdapter } from '../../../infrastructure/object-storage/in-memory-object-storage.adapter';
 import { InMemoryEvidenceArtifactRepository } from './evidence-artifact.repository';
 import {
   EvidenceAccessDeniedError,
@@ -148,6 +149,18 @@ describe('EvidenceService', () => {
     expect(event).toEqual({ evidenceId: artifact.id });
     expect(Object.values(event)).not.toContainEqual(expect.any(Buffer));
     expect(JSON.stringify(event).length).toBeLessThan(100);
+  });
+
+  it('removes metadata and private bytes when the shared transaction rolls back', async () => {
+    const transaction = new PersistenceTransactionLifecycle();
+    const artifact = await service.upload(evidenceUpload(), transaction);
+
+    await transaction.rollback();
+
+    await expect(repository.find('tenant-a', artifact.id)).resolves.toBeNull();
+    await expect(storage.get('tenant-a', artifact.id)).rejects.toThrow(
+      'not found',
+    );
   });
 });
 

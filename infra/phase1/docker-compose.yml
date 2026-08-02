@@ -57,6 +57,7 @@ services:
       PORT: '3000'
       DATABASE_ENABLED: 'true'
       DATABASE_URL: postgresql://${POSTGRES_USER:-dealpilot}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in infra/phase1/.env}@postgres:5432/${POSTGRES_DB:-dealpilot}
+      DURABLE_PRIVATE_STORAGE_REQUIRED: 'false'
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in infra/phase1/.env}
       JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
       JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-7d}

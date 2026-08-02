@@ -1,4 +1,5 @@
-import type { Repository } from 'typeorm';
+import type { EntityManager, Repository } from 'typeorm';
+import { PersistenceTransactionLifecycle } from '../../../database/persistence-transaction';
 import { TestingEvidenceArtifact } from './evidence-artifact.entity';
 import { TypeormEvidenceArtifactRepository } from './evidence-artifact.repository';
 import type { EvidenceArtifactMetadata } from './evidence.types';
@@ -22,6 +23,33 @@ describe('TypeormEvidenceArtifactRepository', () => {
       objectName: '01J00000000000000000000000',
       byteLength: '14',
     });
+  });
+
+  it('uses the caller-owned entity manager for metadata reads and writes', async () => {
+    const root = {
+      findOne: jest.fn(),
+      create: jest.fn(),
+      save: jest.fn(),
+    };
+    const transactional = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn((value: TestingEvidenceArtifact) => value),
+      save: jest.fn((value: TestingEvidenceArtifact) => Promise.resolve(value)),
+    };
+    const getRepository = jest.fn().mockReturnValue(transactional);
+    const manager = { getRepository } as unknown as EntityManager;
+    const repository = new TypeormEvidenceArtifactRepository(
+      root as unknown as Repository<TestingEvidenceArtifact>,
+    );
+
+    await repository.save(
+      metadata(),
+      new PersistenceTransactionLifecycle(manager),
+    );
+
+    expect(getRepository).toHaveBeenCalledWith(TestingEvidenceArtifact);
+    expect(transactional.save).toHaveBeenCalledTimes(1);
+    expect(root.save).not.toHaveBeenCalled();
   });
 });
 

@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, NestMiddleware } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
-import { RequestContextService } from '../request-context/request-context.service';
+import {
+  canonicalRequestRoute,
+  RequestContextService,
+} from '../request-context/request-context.service';
 
 @Injectable()
 export class RequestContextMiddleware implements NestMiddleware {
@@ -14,7 +17,7 @@ export class RequestContextMiddleware implements NestMiddleware {
       {
         requestId,
         method: request.method,
-        route: request.originalUrl,
+        route: canonicalRequestRoute(request.originalUrl),
         startedAtEpochMs: Date.now(),
         queryCount: 0,
         slowQueryCount: 0,

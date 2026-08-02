@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { PersistenceTransaction } from '../../database/persistence-transaction';
 import {
   eventIdConflict,
   expiredCursor,
@@ -46,6 +47,7 @@ export class InMemoryOrderedEventRepository implements OrderedEventRepository {
 
   async append(
     input: AppendOrderedEventInput,
+    transaction?: PersistenceTransaction,
   ): Promise<AppendOrderedEventResult> {
     await Promise.resolve();
     const prepared = prepareOrderedEvent(input);
@@ -63,7 +65,9 @@ export class InMemoryOrderedEventRepository implements OrderedEventRepository {
       throw expiredCursor(prepared.id, this.oldestEventId(pruned.streamId));
     }
 
+    const streamWasCreated = !this.streams.has(prepared.streamId);
     const stream = this.stream(prepared.streamId);
+    const previousSequence = stream.lastSequence;
     const sequence = stream.lastSequence + 1n;
     stream.lastSequence = sequence;
     const event = immutableOrderedEvent({
@@ -83,6 +87,19 @@ export class InMemoryOrderedEventRepository implements OrderedEventRepository {
     this.eventsById.set(event.id, {
       event,
       contentFingerprint: prepared.contentFingerprint,
+    });
+    transaction?.afterRollback(() => {
+      const index = stream.events.findIndex((stored) => stored.id === event.id);
+      if (index >= 0) stream.events.splice(index, 1);
+      this.eventsById.delete(event.id);
+      if (stream.lastSequence === sequence)
+        stream.lastSequence = previousSequence;
+      if (
+        streamWasCreated &&
+        stream.events.length === 0 &&
+        stream.pruned.size === 0
+      )
+        this.streams.delete(prepared.streamId);
     });
     return { event, duplicate: false };
   }

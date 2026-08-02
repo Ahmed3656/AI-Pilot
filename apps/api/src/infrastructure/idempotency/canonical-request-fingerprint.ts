@@ -36,7 +36,7 @@ export function canonicalJson(value: unknown): string {
   }
 
   if (value && typeof value === 'object') {
-    const prototype = Object.getPrototypeOf(value);
+    const prototype = Reflect.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError('Request body contains a non-JSON object');
     }

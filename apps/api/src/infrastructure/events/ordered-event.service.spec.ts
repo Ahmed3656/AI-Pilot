@@ -1,4 +1,5 @@
 import { InMemoryOrderedEventRepository } from './in-memory-ordered-event.repository';
+import { PersistenceTransactionLifecycle } from '../../database/persistence-transaction';
 import { InProcessOrderedEventPublisher } from './in-process-ordered-event.publisher';
 import { OrderedEventPublisher } from './ordered-event.publisher';
 import { OrderedEventRepository } from './ordered-event.repository';
@@ -188,6 +189,27 @@ describe('ordered event infrastructure', () => {
     append.mockResolvedValueOnce({ event: committedEvent, duplicate: true });
     await deferredService.append(eventInput('event-commit'));
     expect(deferredPublish).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers caller-owned publication until commit and removes rolled-back events', async () => {
+    const committed = new PersistenceTransactionLifecycle();
+    await service.append(eventInput('event-transaction-commit'), committed);
+
+    expect(publish).not.toHaveBeenCalled();
+    await committed.commit();
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'event-transaction-commit' }),
+    );
+
+    const rolledBack = new PersistenceTransactionLifecycle();
+    await service.append(eventInput('event-transaction-rollback'), rolledBack);
+    await rolledBack.rollback();
+
+    const page = await service.readPage({ streamId: 'stream-1' });
+    expect(page.events.map((event) => event.id)).toEqual([
+      'event-transaction-commit',
+    ]);
+    expect(publish).toHaveBeenCalledTimes(1);
   });
 
   it('delivers in-process subscriptions only for their stream', async () => {

@@ -10,6 +10,7 @@ describe('S3CompatibleObjectStorageAdapter', () => {
       putObject: jest.fn(),
       getObject: jest.fn(),
       deleteObject: jest.fn(),
+      bucketExists: jest.fn().mockResolvedValue(true),
     };
     const storage = new S3CompatibleObjectStorageAdapter(
       client,
@@ -41,5 +42,41 @@ describe('S3CompatibleObjectStorageAdapter', () => {
       }),
     );
     expect(request.acl).toBeUndefined();
+    await expect(storage.status()).resolves.toBe('up');
+  });
+
+  it('forwards an explicitly configured KMS key without enabling public access', async () => {
+    const client: jest.Mocked<S3CompatibleClient> = {
+      putObject: jest.fn(),
+      getObject: jest.fn(),
+      deleteObject: jest.fn(),
+      bucketExists: jest.fn(),
+    };
+    const storage = new S3CompatibleObjectStorageAdapter(
+      client,
+      'private-evidence',
+      'aws:kms',
+      'synthetic-kms-key',
+    );
+    const body = Buffer.from('kms-encrypted-evidence');
+
+    await storage.put({
+      tenantId: 'tenant-1',
+      objectName: 'artifact-1',
+      body,
+      mediaType: 'application/json',
+      byteLength: body.byteLength,
+      sha256: createHash('sha256').update(body).digest('hex'),
+    });
+
+    const requests = client.putObject.mock.calls;
+    expect(requests).toHaveLength(1);
+    expect(requests[0][0]).toEqual(
+      expect.objectContaining({
+        serverSideEncryption: 'aws:kms',
+        kmsKeyId: 'synthetic-kms-key',
+      }),
+    );
+    expect(requests[0][0]).not.toHaveProperty('acl');
   });
 });

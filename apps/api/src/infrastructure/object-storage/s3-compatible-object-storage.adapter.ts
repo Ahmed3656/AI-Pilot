@@ -1,5 +1,6 @@
 import {
   ObjectNotFoundError,
+  type ObjectStorageHealthPort,
   type ObjectStoragePort,
   type ObjectStoragePutRequest,
   type StoredObject,
@@ -15,19 +16,24 @@ export interface S3CompatibleClient {
     contentLength: number;
     checksumSha256: string;
     serverSideEncryption: 'AES256' | 'aws:kms';
+    kmsKeyId?: string;
   }): Promise<void>;
   getObject(input: {
     bucket: string;
     key: string;
   }): Promise<StoredObject | null>;
   deleteObject(input: { bucket: string; key: string }): Promise<void>;
+  bucketExists(input: { bucket: string }): Promise<boolean>;
 }
 
-export class S3CompatibleObjectStorageAdapter implements ObjectStoragePort {
+export class S3CompatibleObjectStorageAdapter
+  implements ObjectStoragePort, ObjectStorageHealthPort
+{
   constructor(
     private readonly client: S3CompatibleClient,
     private readonly bucket: string,
     private readonly encryption: 'AES256' | 'aws:kms' = 'AES256',
+    private readonly kmsKeyId?: string,
   ) {}
 
   async put(request: ObjectStoragePutRequest): Promise<void> {
@@ -40,6 +46,7 @@ export class S3CompatibleObjectStorageAdapter implements ObjectStoragePort {
       contentLength: request.byteLength,
       checksumSha256: request.sha256,
       serverSideEncryption: this.encryption,
+      ...(this.kmsKeyId ? { kmsKeyId: this.kmsKeyId } : {}),
     });
   }
 
@@ -57,6 +64,16 @@ export class S3CompatibleObjectStorageAdapter implements ObjectStoragePort {
       bucket: this.bucket,
       key: this.key(tenantId, objectName),
     });
+  }
+
+  async status(): Promise<'up' | 'down'> {
+    try {
+      return (await this.client.bucketExists({ bucket: this.bucket }))
+        ? 'up'
+        : 'down';
+    } catch {
+      return 'down';
+    }
   }
 
   private key(tenantId: string, objectName: string): string {

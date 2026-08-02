@@ -53,7 +53,7 @@
     "test:api:coverage": "npm run test:cov --workspace @agent-platform/api",
     "test:mobile": "npm run test --workspace @agent-platform/mobile",
     "test:ai": "node scripts/run-python.mjs -m pytest services/ai-service/tests",
-    "test:benchmark-target": "node --test apps/benchmark-target/test",
+    "test:benchmark-target": "node --test \"apps/benchmark-target/test/*.test.mjs\"",
     "health:check": "node scripts/health-check.mjs",
     "clean": "node scripts/clean.mjs",
     "mobile:doctor": "npm run doctor --workspace @agent-platform/mobile",
@@ -83,7 +83,8 @@
     "docker:ps": "node scripts/phase1.mjs ps"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "npm": ">=10"
   },
   "overrides": {
     "react": "19.1.0"

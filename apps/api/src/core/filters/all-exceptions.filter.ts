@@ -38,13 +38,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       ? contract.message
       : validationMessages.length
         ? 'Request validation failed'
-        : sanitizeMessage(rawMessage);
+        : sanitizeErrorMessage(rawMessage);
     const details: ErrorDetail[] = contract
       ? contract.details
       : validationMessages.map((item) => ({
           field: null,
           code: 'VALIDATION_ERROR',
-          message: sanitizeMessage(item),
+          message: sanitizeErrorMessage(item),
         }));
 
     if (contract?.contractOptions.retryAfterSeconds)
@@ -57,7 +57,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       .type('application/json')
       .json({
         error: {
-          code: contract?.code ?? defaultCode(status),
+          code: contract?.code ?? defaultErrorCode(status),
           message,
           status,
           requestId: this.requestContext.requestId ?? 'unknown',
@@ -68,25 +68,29 @@ export class AllExceptionsFilter implements ExceptionFilter {
   }
 }
 
-function defaultCode(status: number): string {
+export function defaultErrorCode(status: number): string {
   const codes: Record<number, string> = {
     400: 'VALIDATION_ERROR',
     401: 'UNAUTHENTICATED',
-    403: 'RUN_ACCESS_DENIED',
+    403: 'PERMISSION_DENIED',
     404: 'RUN_NOT_FOUND',
-    409: 'INVALID_RUN_TRANSITION',
-    410: 'ADDRESS_GRANT_EXPIRED',
+    409: 'INVALID_DOMAIN_TRANSITION',
+    410: 'CURSOR_EXPIRED',
     429: 'RATE_LIMITED',
-    502: 'AI_SERVICE_UNAVAILABLE',
+    502: 'EXECUTION_PROVIDER_UNAVAILABLE',
     503: 'DEPENDENCY_UNAVAILABLE',
   };
   return codes[status] ?? 'INTERNAL_ERROR';
 }
 
-function sanitizeMessage(value: unknown): string {
+export function sanitizeErrorMessage(value: unknown): string {
   if (typeof value !== 'string') return 'Request failed';
   return value
     .replace(/https?:\/\/\S+/gi, '[REDACTED_URL]')
-    .replace(/bearer\s+\S+/gi, 'Bearer [REDACTED]')
+    .replace(/(bearer|basic)\s+\S+/gi, '$1 [REDACTED]')
+    .replace(
+      /([?&](?:password|passphrase|secret|token|authorization|cookie)[^=]*=)[^&\s]*/gi,
+      '$1[REDACTED]',
+    )
     .slice(0, 300);
 }

@@ -6,6 +6,7 @@ import { DataSource } from 'typeorm';
 @Injectable()
 export class DatabaseHealthService {
   private static readonly REQUIRED_TABLES = [
+    // Readiness covers both the isolated legacy schema and every merged neutral foundation.
     'shopping_runs',
     'shopping_merchant_attempts',
     'shopping_normalized_offers',
@@ -15,6 +16,18 @@ export class DatabaseHealthService {
     'shopping_evidence_artifacts',
     'shopping_control_leases',
     'shopping_idempotency_records',
+    'users',
+    'password_credentials',
+    'authentication_sessions',
+    'authentication_refresh_tokens',
+    'identity_one_time_tokens',
+    'authentication_login_throttles',
+    'audit_records',
+    'idempotency_records',
+    'event_stream_sequences',
+    'ordered_events',
+    'pruned_event_cursors',
+    'testing_evidence_artifacts',
   ];
   constructor(
     private readonly config: ConfigService,
